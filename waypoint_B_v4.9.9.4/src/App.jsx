@@ -189,6 +189,23 @@ h1, h2, h3, h4 { font-style: normal; overflow-wrap: anywhere; }
 }
 `;
 
+/* The pid in the link is authoritative: if it differs from the ID this browser holds,
+   treat it as a new participant on this device — the old session marks are cleared so the
+   consent/ID flow starts fresh under the linked number. Same pid (a mid-study refresh)
+   leaves the session untouched. */
+(() => {
+  try {
+    const urlPid = new URLSearchParams(window.location.search).get("pid");
+    if (!urlPid) return;
+    const clean = urlPid.trim().slice(0, 64);
+    const current = localStorage.getItem("fah_pid");
+    if (current && current !== clean) {
+      for (const k of ["fah_pid", "fah_done", "fah_tut"]) localStorage.removeItem(k);
+    }
+    localStorage.setItem("fah_assigned", clean);
+  } catch {}
+})();
+
 /* Saved hotels (the participant's Saves list). has/toggle via context; server-persisted. */
 const SavesContext = React.createContext({ ids: [], has: () => false, toggle: () => {} });
 
