@@ -353,15 +353,17 @@ function LikeDislike({ hotelId, mine, pending, errors, saved, vote, size = "sm",
   const err = errors[hotelId];
   const ok = Boolean(saved[hotelId]);
   const lastChoice = useRef(null);
-  const pad = size === "lg" ? "8px 14px" : "6px 11px";
-  const fs = size === "lg" ? 14 : 12.5;
+  const uiAll = React.useContext(UiContext);
+  const dims = SAVE_DIMS[(uiAll && uiAll.__saveSize) || "lg"] || SAVE_DIMS.lg;   // "lg" buttons match the Save button size exactly
+  const pad = size === "lg" ? dims.pad : "6px 11px";
+  const fs = size === "lg" ? dims.font : 12.5;
   const handle = (choice) => (e) => { if (stop) e.stopPropagation(); lastChoice.current = choice; vote(hotelId, choice, source); };
   const btn = (active, activeColor) => ({
     display: "inline-flex", alignItems: "center", gap: 6, padding: pad, fontSize: fs,
-    borderRadius: 99, minHeight: 34,
+    borderRadius: 99, minHeight: size === "lg" ? dims.h : 34, fontWeight: 700,
     border: `1px solid ${active ? activeColor : C.line}`,
     background: active ? activeColor : C.card,
-    color: active ? "#fff" : C.inkSoft, fontWeight: active ? 600 : 500,
+    color: active ? "#fff" : C.ink,
   });
   return (
     <div onClick={stop ? (e => e.stopPropagation()) : undefined} onKeyDown={stop ? (e => e.stopPropagation()) : undefined}>
