@@ -172,6 +172,7 @@ export async function init() {
   await pool.query("ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS detail_ms BIGINT DEFAULT 0");
   // review_ms = ms the reviews section was on screen; review_seen = deepest review reached (1-based); review_total = reviews available
   await pool.query("ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS review_ms BIGINT DEFAULT 0");
+  await pool.query("ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS hover_ms BIGINT DEFAULT 0");
   await pool.query("ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS review_seen INTEGER DEFAULT 0");
   await pool.query("ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS review_total INTEGER DEFAULT 0");
   await pool.query(`CREATE TABLE IF NOT EXISTS saves (
@@ -1033,8 +1034,8 @@ export async function addDwell(pid, ms) {
 /* record a hotel event.
    type: 'seen' | 'click' (n = count, default 1)
          'list_ms' | 'detail_ms' (n = milliseconds to add) */
-const EVENT_COLS = { seen: "seen", click: "clicks", list_ms: "list_ms", detail_ms: "detail_ms", review_ms: "review_ms", review_seen: "review_seen", review_total: "review_total" };
-const EVENT_MAX  = { seen: 50, click: 50, list_ms: 10 * 60 * 1000, detail_ms: 10 * 60 * 1000, review_ms: 10 * 60 * 1000, review_seen: 500, review_total: 500 };
+const EVENT_COLS = { seen: "seen", click: "clicks", list_ms: "list_ms", detail_ms: "detail_ms", review_ms: "review_ms", hover_ms: "hover_ms", review_seen: "review_seen", review_total: "review_total" };
+const EVENT_MAX  = { seen: 50, click: 50, list_ms: 10 * 60 * 1000, detail_ms: 10 * 60 * 1000, review_ms: 10 * 60 * 1000, hover_ms: 10 * 60 * 1000, review_seen: 500, review_total: 500 };
 const EVENT_SET_MAX = new Set(["review_seen", "review_total"]);   // these store the maximum, not a sum
 export async function trackHotelEvent(pid, hotelId, type, n = 1) {
   if (!pid || !hotelId || !EVENT_COLS[type]) return;
@@ -1042,10 +1043,11 @@ export async function trackHotelEvent(pid, hotelId, type, n = 1) {
   if (!n) return;
   if (!HAS_DB) {
     const m = mem.hotelEvents[pid] || (mem.hotelEvents[pid] = {});
-    const e = m[hotelId] || (m[hotelId] = { seen: 0, click: 0, listMs: 0, detailMs: 0, reviewMs: 0, reviewSeen: 0, reviewTotal: 0 });
+    const e = m[hotelId] || (m[hotelId] = { seen: 0, click: 0, listMs: 0, detailMs: 0, reviewMs: 0, hoverMs: 0, reviewSeen: 0, reviewTotal: 0 });
     if (type === "seen") e.seen += n; else if (type === "click") e.click += n;
     else if (type === "list_ms") e.listMs += n; else if (type === "detail_ms") e.detailMs += n;
     else if (type === "review_ms") e.reviewMs += n;
+    else if (type === "hover_ms") e.hoverMs += n;
     else if (type === "review_seen") e.reviewSeen = Math.max(e.reviewSeen || 0, n);
     else if (type === "review_total") e.reviewTotal = Math.max(e.reviewTotal || 0, n);
     return;
@@ -1090,7 +1092,7 @@ export async function hotelEventRows() {
         const vote_source = ((mem.votes[hid] || {}).sources || {})[pid] || "";
         out.push({ pid, hotel_id: hid, hotel_name: h.name || hid, city: h.city || "", rating: h.rating ?? "", review_count: h.reviewCount ?? "",
                    seen: e.seen || 0, clicks: e.click || 0, vote, vote_source, list_ms: e.listMs || 0, detail_ms: e.detailMs || 0,
-                   review_ms: e.reviewMs || 0, review_seen: e.reviewSeen || 0, review_total: e.reviewTotal || 0 });
+                   review_ms: e.reviewMs || 0, hover_ms: e.hoverMs || 0, review_seen: e.reviewSeen || 0, review_total: e.reviewTotal || 0 });
       }
     }
     // votes on hotels with no view record (e.g. voted from a state we did not observe)
@@ -1099,7 +1101,7 @@ export async function hotelEventRows() {
         if (out.some(r => r.pid === pid && r.hotel_id === hid)) continue;
         const h = hotelOf(hid);
         out.push({ pid, hotel_id: hid, hotel_name: h.name || hid, city: h.city || "", rating: h.rating ?? "", review_count: h.reviewCount ?? "",
-                   seen: 0, clicks: 0, vote: choice, vote_source: (v.sources || {})[pid] || "", list_ms: 0, detail_ms: 0, review_ms: 0, review_seen: 0, review_total: 0 });
+                   seen: 0, clicks: 0, vote: choice, vote_source: (v.sources || {})[pid] || "", list_ms: 0, detail_ms: 0, review_ms: 0, hover_ms: 0, review_seen: 0, review_total: 0 });
       }
     }
   } else {
@@ -1107,13 +1109,13 @@ export async function hotelEventRows() {
       SELECT k.pid, k.hotel_id, h.name AS hotel_name, h.city, h.rating, h.review_count,
              COALESCE(e.seen,0) AS seen, COALESCE(e.clicks,0) AS clicks, COALESCE(v.choice,'') AS vote, COALESCE(v.source,'') AS vote_source,
              COALESCE(e.list_ms,0) AS list_ms, COALESCE(e.detail_ms,0) AS detail_ms,
-             COALESCE(e.review_ms,0) AS review_ms, COALESCE(e.review_seen,0) AS review_seen, COALESCE(e.review_total,0) AS review_total
+             COALESCE(e.review_ms,0) AS review_ms, COALESCE(e.hover_ms,0) AS hover_ms, COALESCE(e.review_seen,0) AS review_seen, COALESCE(e.review_total,0) AS review_total
       FROM (SELECT pid, hotel_id FROM hotel_events UNION SELECT voter_id, hotel_id FROM votes) k
       LEFT JOIN hotel_events e ON e.pid=k.pid AND e.hotel_id=k.hotel_id
       LEFT JOIN votes v ON v.voter_id=k.pid AND v.hotel_id=k.hotel_id
       LEFT JOIN hotels h ON h.id=k.hotel_id
       ORDER BY k.pid, k.hotel_id`);
-    for (const r of rows) out.push({ ...r, rating: r.rating ?? "", review_count: r.review_count ?? "", list_ms: Number(r.list_ms), detail_ms: Number(r.detail_ms), review_ms: Number(r.review_ms) });
+    for (const r of rows) out.push({ ...r, rating: r.rating ?? "", review_count: r.review_count ?? "", list_ms: Number(r.list_ms), detail_ms: Number(r.detail_ms), review_ms: Number(r.review_ms), hover_ms: Number(r.hover_ms) });
   }
   // attach the participant's condition to every row (handy for analysis in one file)
   const cond = {};

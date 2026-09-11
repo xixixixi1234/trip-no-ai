@@ -58,10 +58,13 @@ const Track = {
     }
   },
   _add(hotelId, type, ms) {
-    const b = this.buffer[hotelId] || (this.buffer[hotelId] = { list_ms: 0, detail_ms: 0, review_ms: 0 });
+    const b = this.buffer[hotelId] || (this.buffer[hotelId] = { list_ms: 0, detail_ms: 0, review_ms: 0, hover_ms: 0 });
     b[type] += ms;
   },
   reviewsVisibleId: null,   // hotel whose reviews section is currently on screen
+  _hoverT: {},              // hotelId -> mouseenter timestamp
+  hoverStart(id) { this._hoverT[id] = Date.now(); },
+  hoverEnd(id) { const t = this._hoverT[id]; if (t) { delete this._hoverT[id]; this._add(id, "hover_ms", Date.now() - t); } },
   // send buffered dwell; `beacon` = page is closing, use sendBeacon so the request survives unload
   flush(beacon = false) {
     if (!this.pid) return;
@@ -70,6 +73,7 @@ const Track = {
       if (b.list_ms >= 250) items.push({ hotelId, type: "list_ms", n: Math.round(b.list_ms) });
       if (b.detail_ms >= 250) items.push({ hotelId, type: "detail_ms", n: Math.round(b.detail_ms) });
       if (b.review_ms >= 250) items.push({ hotelId, type: "review_ms", n: Math.round(b.review_ms) });
+      if (b.hover_ms >= 150) items.push({ hotelId, type: "hover_ms", n: Math.round(b.hover_ms) });
     }
     if (!items.length) return;
     this.buffer = {};
@@ -712,6 +716,10 @@ function Coachmark({ steps, onDone, skippable = true }) {
     if (key === "ai") return row.querySelector(".wp-tip")?.parentElement || row;
     if (key === "saves") return document.querySelector('[aria-label^="Open saved hotels"]') || row;
     if (key === "finish") return document.getElementById("wp-finish") || row;
+    if (key === "bookmark") return [...document.querySelectorAll("button")].find(b => /Bookmark/i.test(b.textContent)) || row;
+    if (key === "id") return document.getElementById("wp-idtag") || row;
+    if (key === "pager") return document.querySelector('nav[aria-label="Pagination"]') || row;
+    if (key === "back") return [...document.querySelectorAll("button")].find(b => /All destinations/i.test(b.textContent)) || row;
     return row;
   };
   useEffect(() => {
@@ -771,10 +779,17 @@ function HeartIcon({ filled, size = 20 }) {
 }
 
 /* Labeled Save button shown where Like/Dislike used to be */
+const SAVE_DIMS = {
+  md: { pad: "9px 18px",  font: 14,   h: 42, icon: 16 },
+  lg: { pad: "14px 28px", font: 16.5, h: 52, icon: 20 },
+  xl: { pad: "18px 36px", font: 19,   h: 62, icon: 24 },
+};
 function SavePill({ hotelId, source, size = "md" }) {
   const saves = React.useContext(SavesContext);
+  const uiAll = React.useContext(UiContext);
+  const dims = SAVE_DIMS[(uiAll && uiAll.__saveSize) || "lg"] || SAVE_DIMS.lg;
   const on = saves.has(hotelId);
-  const pad = size === "lg" ? "14px 28px" : "8px 16px";
+  const pad = size === "lg" ? dims.pad : "8px 16px";
   return (
     <button type="button"
       onClick={e => { e.stopPropagation(); saves.toggle(hotelId, source); }}
@@ -783,8 +798,8 @@ function SavePill({ hotelId, source, size = "md" }) {
       className="wp-btn wp-ghost"
       style={{ display: "inline-flex", alignItems: "center", gap: 8, border: `1px solid ${on ? C.buoy : C.line}`,
                background: on ? "#FDEEE9" : C.card, color: C.ink, borderRadius: 99, padding: pad,
-               fontSize: size === "lg" ? 16.5 : 13.5, fontWeight: 700, minHeight: size === "lg" ? 52 : 40 }}>
-      <HeartIcon filled={on} size={size === "lg" ? 20 : 15} />
+               fontSize: size === "lg" ? dims.font : 13.5, fontWeight: 700, minHeight: size === "lg" ? dims.h : 40 }}>
+      <HeartIcon filled={on} size={size === "lg" ? dims.icon : 15} />
       {on ? "Saved" : "Save this hotel"}
     </button>
   );
@@ -1432,7 +1447,8 @@ function CityHotelRow({ l, onOpen, votes, showAi = true }) {
   }
 
   return (
-    <div ref={rowRef} className="wp-card wp-row" {...cardProps(onOpen, `Open ${l.name}`)} style={{
+    <div ref={rowRef} className="wp-card wp-row" {...cardProps(onOpen, `Open ${l.name}`)}
+      onMouseEnter={() => Track.hoverStart(l.id)} onMouseLeave={() => Track.hoverEnd(l.id)} style={{
       background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, overflow: "hidden", position: "relative",
     }}>
       {heart}
@@ -1702,7 +1718,7 @@ export default function App() {
       });
     },
   }), [saveIds, pid]);
-  useEffect(() => { loadConfig().then(c => { if (c && typeof c.aiSearch === "boolean") setAi({ search: c.aiSearch, product: c.aiProduct }); if (c && c.elements) setUi({ ...c.elements, __goodbye: (c.goodbye || "").trim(), __return: (c.returnUrl || "").trim() }); }).catch(() => {}); }, []);
+  useEffect(() => { loadConfig().then(c => { if (c && typeof c.aiSearch === "boolean") setAi({ search: c.aiSearch, product: c.aiProduct }); if (c && c.elements) setUi({ ...c.elements, __goodbye: (c.goodbye || "").trim(), __return: (c.returnUrl || "").trim(), __saveSize: c.saveSize || "lg" }); }).catch(() => {}); }, []);
 
   const loadData = async (isRetry = false) => {
     setDataState(s => ({ status: isRetry ? "error" : "loading", retrying: isRetry }));
@@ -1804,7 +1820,7 @@ export default function App() {
           <nav style={{ display: "flex", gap: 8, alignItems: "center", minWidth: 0 }}>
             {pid && (
               <span className="wp-text" title={`Participant ${pid}`} style={{ fontFamily: "'Roboto Mono', monospace", fontSize: 12, color: C.inkSoft, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                ID {pid}
+                <span id="wp-idtag">ID {pid}</span>
               </span>
             )}
 
