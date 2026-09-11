@@ -645,7 +645,12 @@ function ExitReview({ pid, saves, onCancel, onFinish }) {
     onFinish();
   };
   const Row = ({ h, right }) => (
-    <div style={{ display: "flex", gap: 10, alignItems: "center", border: `1px solid ${C.line}`, background: C.card, borderRadius: 10, padding: "12px 14px", marginBottom: 8 }}>
+    <div style={{ display: "flex", gap: 12, alignItems: "center", border: `1px solid ${C.line}`, background: C.card, borderRadius: 10, padding: "10px 14px 10px 10px", marginBottom: 8 }}>
+      {h.image ? (
+        <img src={h.image} alt="" style={{ width: 64, height: 48, borderRadius: 8, objectFit: "cover", flex: "0 0 auto", background: C.sea }} />
+      ) : (
+        <span style={{ width: 64, height: 48, borderRadius: 8, background: C.sea, flex: "0 0 auto" }} />
+      )}
       <span className="wp-text" style={{ minWidth: 0, flex: 1, fontWeight: 700, fontSize: 14, color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{h.name}</span>
       {right}
     </div>

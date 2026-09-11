@@ -175,6 +175,7 @@ export async function init() {
   await pool.query("ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS hover_ms BIGINT DEFAULT 0");
   await pool.query("ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS review_seen INTEGER DEFAULT 0");
   await pool.query("ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS review_total INTEGER DEFAULT 0");
+  await pool.query("CREATE TABLE IF NOT EXISTS issued_pids (num INTEGER PRIMARY KEY)");
   await pool.query(`CREATE TABLE IF NOT EXISTS saves (
     pid      TEXT,
     hotel_id TEXT,
@@ -561,14 +562,22 @@ export async function setHotelCover(hotelId, imageId) {
   return { ok: true };
 }
 
-/* next sequential participant number (P0001, P0002, …) — no IP or fingerprint involved */
+/* random, never-repeating participant number between 0001 and 9999 —
+   each issued number is remembered so the same one is never handed out twice.
+   Nothing about the visitor (IP etc.) is read or stored. */
 export async function nextPid() {
-  if (!HAS_DB) { const n = (parseInt(mem.settings.pid_counter || "0", 10) || 0) + 1; mem.settings.pid_counter = String(n); return n; }
-  const { rows } = await pool.query(
-    `INSERT INTO settings(key,value) VALUES('pid_counter','1')
-     ON CONFLICT (key) DO UPDATE SET value=((settings.value)::int + 1)::text
-     RETURNING value`);
-  return parseInt(rows[0].value, 10);
+  if (!HAS_DB) {
+    mem.issuedPids = mem.issuedPids || new Set();
+    for (let i = 0; i < 200; i++) { const n = 1 + Math.floor(Math.random() * 9999); if (!mem.issuedPids.has(n)) { mem.issuedPids.add(n); return n; } }
+    let n = 1; while (mem.issuedPids.has(n)) n++; mem.issuedPids.add(n); return n;
+  }
+  for (let i = 0; i < 200; i++) {
+    const n = 1 + Math.floor(Math.random() * 9999);
+    const { rows } = await pool.query("INSERT INTO issued_pids(num) VALUES($1) ON CONFLICT DO NOTHING RETURNING num", [n]);
+    if (rows.length) return rows[0].num;
+  }
+  const { rows } = await pool.query("INSERT INTO issued_pids(num) SELECT COALESCE(MAX(num),0)+1 FROM issued_pids RETURNING num");
+  return rows[0].num;
 }
 
 /* the hotel the participant chose to "book" on the exit screen (one per participant) */
@@ -604,9 +613,10 @@ export async function resetStudyData() {
   if (!HAS_DB) {
     mem.votes = {}; mem.voteLog = []; mem.participants = {}; mem.hotelFavs = {};
     mem.hotelEvents = {}; mem.reviewVotes = {}; mem.saves = {}; mem.saveEvents = [];
+    mem.issuedPids = new Set();                                  // the number pool starts fresh too
     return { ok: true };
   }
-  for (const t of ["votes", "vote_events", "participants", "hotel_favorites", "hotel_events", "review_votes", "saves", "save_events"]) await pool.query(`DELETE FROM ${t}`);
+  for (const t of ["votes", "vote_events", "participants", "hotel_favorites", "hotel_events", "review_votes", "saves", "save_events", "issued_pids"]) await pool.query(`DELETE FROM ${t}`);
   return { ok: true };
 }
 /* Restore all CONTENT to the shipped defaults: hotel texts/prices from src/cities.js,
