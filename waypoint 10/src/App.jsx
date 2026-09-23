@@ -46,6 +46,7 @@ const Track = {
       const now = Date.now(); const ms = now - lastTick; lastTick = now;
       if (document.hidden || ms <= 0 || ms > 5000) return;
       for (const id of this.visible) this._add(id, "list_ms", ms);
+      for (const k of this.zonesVisible) { const i = k.indexOf("|"); this._add(k.slice(0, i), k.slice(i + 1), ms); }
       if (this.detailId) this._add(this.detailId, "detail_ms", ms);
       if (this.reviewsVisibleId) this._add(this.reviewsVisibleId, "review_ms", ms);
     }, 1000);
@@ -58,22 +59,29 @@ const Track = {
     }
   },
   _add(hotelId, type, ms) {
-    const b = this.buffer[hotelId] || (this.buffer[hotelId] = { list_ms: 0, detail_ms: 0, review_ms: 0, hover_ms: 0 });
-    b[type] += ms;
+    const b = this.buffer[hotelId] || (this.buffer[hotelId] = {});
+    b[type] = (b[type] || 0) + ms;
   },
   reviewsVisibleId: null,   // hotel whose reviews section is currently on screen
   _hoverT: {},              // hotelId -> mouseenter timestamp
   hoverStart(id) { this._hoverT[id] = Date.now(); },
   hoverEnd(id) { const t = this._hoverT[id]; if (t) { delete this._hoverT[id]; this._add(id, "hover_ms", Date.now() - t); } },
+  /* semantic zones (ai / desc / rating / price / reviews): visibility set walked by the heartbeat, hover via enter/leave */
+  zonesVisible: new Set(),
+  zoneShow(id, z) { this.zonesVisible.add(id + "|" + z); },
+  zoneHide(id, z) { this.zonesVisible.delete(id + "|" + z); },
+  _zoneHovT: {},
+  zoneHoverStart(id, z) { this._zoneHovT[id + "|" + z] = Date.now(); },
+  zoneHoverEnd(id, z) { const k = id + "|" + z, t = this._zoneHovT[k]; if (t) { delete this._zoneHovT[k]; this._add(id, z.replace("_vis_", "_hov_"), Date.now() - t); } },
   // send buffered dwell; `beacon` = page is closing, use sendBeacon so the request survives unload
   flush(beacon = false) {
     if (!this.pid) return;
     const items = [];
     for (const [hotelId, b] of Object.entries(this.buffer)) {
-      if (b.list_ms >= 250) items.push({ hotelId, type: "list_ms", n: Math.round(b.list_ms) });
-      if (b.detail_ms >= 250) items.push({ hotelId, type: "detail_ms", n: Math.round(b.detail_ms) });
-      if (b.review_ms >= 250) items.push({ hotelId, type: "review_ms", n: Math.round(b.review_ms) });
-      if (b.hover_ms >= 150) items.push({ hotelId, type: "hover_ms", n: Math.round(b.hover_ms) });
+      for (const [type, ms] of Object.entries(b)) {
+        const min = type === "hover_ms" || type.endsWith("_hov_ms") ? 150 : 250;   // hover shards can be brief but meaningful
+        if (ms >= min) items.push({ hotelId, type, n: Math.round(ms) });
+      }
     }
     if (!items.length) return;
     this.buffer = {};
@@ -450,12 +458,12 @@ function DetailPage({ listing, onBack, votes, showAi = true }) {
           <h1 style={{ fontFamily: "'Poppins', sans-serif", fontSize: "clamp(23px, 5vw, 34px)", fontWeight: 700, margin: "0 0 6px", color: C.ink, lineHeight: 1.15 }}>
             {listing.name}
           </h1>
-          <div className="wp-text" style={{ fontSize: 14.5, color: C.inkSoft, marginBottom: 12, lineHeight: 1.5 }}>{listing.place}{show("detail.price") && listing.price ? ` · ${listing.price}` : ""}</div>
-          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+          <Zone hotelId={listing.id} z="price"><div className="wp-text" style={{ fontSize: 14.5, color: C.inkSoft, marginBottom: 12, lineHeight: 1.5 }}>{listing.place}{show("detail.price") && listing.price ? ` · ${listing.price}` : ""}</div></Zone>
+          <Zone hotelId={listing.id} z="rating" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
             <span style={{ fontFamily: "'Poppins', sans-serif", fontSize: 26, fontWeight: 700, color: C.ink }}>{listing.rating.toFixed(1)}</span>
             <Buoys value={listing.rating} size={16} />
             <span style={{ fontSize: 14, color: C.inkSoft }}>{(listing.reviewCount || 0).toLocaleString()} traveller reviews</span>
-          </div>
+          </Zone>
           {listing.tags.length > 0 && show("detail.tags") && (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
               {listing.tags.map(t => <Tag key={t}>{t}</Tag>)}
@@ -464,7 +472,7 @@ function DetailPage({ listing, onBack, votes, showAi = true }) {
           {headerOrder.map(k => {
             if (k === "description") {
               const desc = listing.about && listing.about.trim() && listing.about.trim() !== (listing.seo || "").trim() ? listing.about.trim() : "";
-              return desc && show("detail.description") ? <p key={k} className="wp-text" style={{ fontSize: 15, lineHeight: 1.7, color: C.ink, margin: "0 0 14px", maxWidth: 720 }}>{desc}</p> : null;
+              return desc && show("detail.description") ? <Zone key={k} hotelId={listing.id} z="desc"><p className="wp-text" style={{ fontSize: 15, lineHeight: 1.7, color: C.ink, margin: "0 0 14px", maxWidth: 720 }}>{desc}</p></Zone> : null;
             }
             if (k === "save") return show("detail.save") && Track.pid ? (
               <div key={k} style={{ paddingTop: 14, borderTop: `1px solid ${C.line}`, marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -486,10 +494,10 @@ function DetailPage({ listing, onBack, votes, showAi = true }) {
       {sectionOrder.map(k => {
         if (k === "about") return show("about.section") ? <AboutSection key={k} listing={listing} /> : null;
         if (k === "ai") return listing.seo && showAi ? (
-          <div key={k} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, marginBottom: 20, display: "flex", gap: 10, alignItems: "flex-start" }}>
+          <Zone key={k} hotelId={listing.id} z="ai" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, marginBottom: 20, display: "flex", gap: 10, alignItems: "flex-start" }}>
             <AiBadge />
             <p className="wp-text" style={{ fontSize: 15, lineHeight: 1.7, color: C.inkSoft, margin: 0 }}>{listing.seo}</p>
-          </div>
+          </Zone>
         ) : null;
         if (k === "reviews") return show("reviews.section") ? <GuestReviews key={k} hotelId={listing.id} /> : null;
         return null;
@@ -785,6 +793,28 @@ function HeartIcon({ filled, size = 20 }) {
   );
 }
 
+/* Wraps one semantic block (AI summary / description / rating / price / reviews) of a hotel and
+   feeds two attention clocks: time the block is ≥50% visible, and time the mouse is over it. */
+function Zone({ hotelId, z, children, style, className }) {
+  const ref = React.useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !Track.pid) return;
+    const vk = z + "_vis_ms";
+    const ob = new IntersectionObserver(es => es.forEach(e => e.isIntersecting ? Track.zoneShow(hotelId, vk) : Track.zoneHide(hotelId, vk)), { threshold: 0.5 });
+    ob.observe(el);
+    return () => { ob.disconnect(); Track.zoneHide(hotelId, vk); Track.zoneHoverEnd(hotelId, vk); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hotelId, z]);
+  return (
+    <div ref={ref} className={className} style={style}
+      onMouseEnter={() => Track.pid && Track.zoneHoverStart(hotelId, z + "_vis_ms")}
+      onMouseLeave={() => Track.pid && Track.zoneHoverEnd(hotelId, z + "_vis_ms")}>
+      {children}
+    </div>
+  );
+}
+
 /* Labeled Save button shown where Like/Dislike used to be */
 const SAVE_DIMS = {
   md: { pad: "9px 18px",  font: 14,   h: 42, icon: 16 },
@@ -1010,7 +1040,10 @@ function GuestReviews({ hotelId }) {
   const visible = ui.nav === "pages" ? items.slice(page * ui.first, (page + 1) * ui.first) : items.slice(0, shown);
   const baseIndex = ui.nav === "pages" ? page * ui.first : 0;
   return (
-    <div ref={sectionRef} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, marginBottom: 20 }}>
+    <div ref={sectionRef}
+      onMouseEnter={() => Track.pid && Track.zoneHoverStart(hotelId, "reviews_vis_ms")}
+      onMouseLeave={() => Track.pid && Track.zoneHoverEnd(hotelId, "reviews_vis_ms")}
+      style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, marginBottom: 20 }}>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
         <h2 style={{ fontFamily: "'Poppins', sans-serif", fontSize: 19, fontWeight: 600, margin: 0, color: C.ink }}>Guest reviews</h2>
         {state.status === "ok" && items.length > 0 && <span style={{ fontSize: 13, color: C.inkSoft }}>{items.length} review{items.length === 1 ? "" : "s"}</span>}
@@ -1241,6 +1274,7 @@ function CityPage({ cityKey, onBack, onOpen, votes, favs, cities, hotels: allHot
   const show = useShow();
   const [tut, setTut] = useState(null);   // steps array while the coachmark is active
   const [tutSkip, setTutSkip] = useState(true);
+  useEffect(() => { if (pid) postJson("/api/list-visit", { pid }); }, [pid, cityKey]);   // each entry into a hotel list = one search-page viewing (a reload lands on Home, so it does not double-count)
   useEffect(() => {
     if (!pid || localStorage.getItem("fah_tut") === "1") return;
     loadConfig().then(c => {
@@ -1411,7 +1445,7 @@ function CityHotelRow({ l, onOpen, votes, showAi = true }) {
       entries.forEach(e => { if (e.isIntersecting) Track.enter(l.id); else Track.leave(l.id); });
     }, { threshold: 0.5 });
     io.observe(el);
-    return () => { io.disconnect(); Track.leave(l.id); };
+    return () => { io.disconnect(); Track.leave(l.id); Track.hoverEnd(l.id); };   // settle any open hover segment when the card unmounts (e.g. click-through)
   }, [l.id]);
 
   const showSeo = Boolean(l.seo) && showAi;
@@ -1464,14 +1498,14 @@ function CityHotelRow({ l, onOpen, votes, showAi = true }) {
       </div>
       <div className="wp-text" style={{ padding: "14px 18px", minWidth: 0 }}>
         <div className="wp-text" style={{ fontFamily: "'Poppins', sans-serif", fontSize: 18, fontWeight: 700, color: C.ink, lineHeight: 1.25 }}>{l.name}</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "6px 0 10px", flexWrap: "wrap" }}>
+        <Zone hotelId={l.id} z="rating" style={{ display: "flex", alignItems: "center", gap: 8, margin: "6px 0 10px", flexWrap: "wrap" }}>
           <Buoys value={l.rating} size={12} />
           <span style={{ fontWeight: 700, fontSize: 13.5, color: C.ink }}>{l.rating.toFixed(1)}</span>
           {show("list.reviewCount") && <span style={{ fontSize: 12.5, color: C.inkSoft }}>({(l.reviewCount || 0).toLocaleString()})</span>}
-        </div>
+        </Zone>
         {layout.list.map(k => {
-          if (k === "description") return desc && show("list.description") ? <p key={k} className="wp-text" style={{ fontSize: 13, lineHeight: 1.6, color: C.ink, margin: "0 0 10px" }}>{firstSentence(desc)}</p> : null;
-          if (k === "ai") return body ? <div key={k} style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 10 }}>{body}</div> : null;
+          if (k === "description") return desc && show("list.description") ? <Zone key={k} hotelId={l.id} z="desc"><p className="wp-text" style={{ fontSize: 13, lineHeight: 1.6, color: C.ink, margin: "0 0 10px" }}>{firstSentence(desc)}</p></Zone> : null;
+          if (k === "ai") return body ? <Zone key={k} hotelId={l.id} z="ai" style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 10 }}>{body}</Zone> : null;
           if (k === "vote") return votes && show("list.vote") ? <div key={k} style={{ margin: "2px 0 10px" }}><LikeDislike hotelId={l.id} {...votes} source="list" /></div> : null;
           if (k === "save") return (show("list.save") || show("list.vote")) && Track.pid ? (
             <div key={k} style={{ margin: "2px 0 10px", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -1480,7 +1514,7 @@ function CityHotelRow({ l, onOpen, votes, showAi = true }) {
             </div>
           ) : null;
           if (k === "priceCheck") return (show("list.price") && l.price) || show("list.check") ? (
-            <div key={k} style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12, marginTop: 4, paddingTop: 12, borderTop: `1px solid ${C.line}` }}>
+            <Zone key={k} hotelId={l.id} z="price" style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12, marginTop: 4, paddingTop: 12, borderTop: `1px solid ${C.line}` }}>
               {show("list.price") && l.price ? (
                 <div>
                   <div style={{ fontSize: 12, color: C.inkSoft }}>from</div>
@@ -1493,7 +1527,7 @@ function CityHotelRow({ l, onOpen, votes, showAi = true }) {
                   Check this hotel
                 </button>
               )}
-            </div>
+            </Zone>
           ) : null;
           return null;
         })}

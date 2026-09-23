@@ -163,7 +163,14 @@ app.get("/api/votes", async (_req, res) => {
 /* next free participant number (P0001, P0002, …). Nothing about the visitor is read or stored —
    the browser remembers its number locally, so a refresh does not consume a new one. */
 app.get("/api/assign-id", async (_req, res) => {
-  try { const n = await db.nextPid(); res.json({ pid: (process.env.PID_PREFIX || "B") + String(n).padStart(4, "0") }); }
+  try { const n = await db.nextPid(); res.json({ pid: (process.env.PID_PREFIX || "A") + String(n).padStart(4, "0") }); }
+  catch (e) { console.error(e); res.status(500).json({ error: "failed" }); }
+});
+
+/* participant entered the hotel list (a new search-page viewing) */
+app.post("/api/list-visit", async (req, res) => {
+  try { const { pid } = req.body || {}; if (!pid) return res.status(400).json({ error: "pid required" });
+    res.json({ n: await db.bumpListVisit(String(pid).slice(0, 64)) }); }
   catch (e) { console.error(e); res.status(500).json({ error: "failed" }); }
 });
 
@@ -289,7 +296,8 @@ app.post("/api/track/session", async (req, res) => {
 });
 
 // hotel event: seen (card entered viewport) | click (detail opened) | list_ms | detail_ms (dwell, n = ms)
-const EVENT_TYPES = ["seen", "click", "list_ms", "detail_ms", "review_ms", "hover_ms", "review_seen", "review_total"];
+const EVENT_TYPES = ["seen", "click", "list_ms", "detail_ms", "review_ms", "hover_ms", "review_seen", "review_total",
+  "ai_vis_ms", "ai_hov_ms", "desc_vis_ms", "desc_hov_ms", "rating_vis_ms", "rating_hov_ms", "price_vis_ms", "price_hov_ms", "reviews_hov_ms"];
 app.post("/api/track/event", async (req, res) => {
   const { pid, hotelId, type, n } = req.body || {};
   if (!pid || !hotelId || !EVENT_TYPES.includes(type)) {
@@ -436,8 +444,8 @@ app.get("/api/admin/export/votes.csv", requireAdmin, async (_req, res) => {
   try {
     const rows = await db.recentVotes(1000000);
     const csv = toCsv(
-      ["participant_id", "hotel_id", "hotel_name", "action", "result", "page", "time"],
-      rows.map(v => [v.voter_id, v.hotel_id, v.hotel_name || "", v.choice === "up" ? "like" : "dislike", v.result || "set", v.source || "", v.updated_at || ""])
+      ["participant_id", "hotel_id", "hotel_name", "action", "result", "page", "had_opened_product_page", "nth_search_page_visit", "nth_product_page_visit", "time"],
+      rows.map(v => [v.voter_id, v.hotel_id, v.hotel_name || "", v.choice === "up" ? "like" : "dislike", v.result || "set", v.source || "", v.after_detail == null ? "" : (v.after_detail ? "yes" : "no"), v.list_visit_no ?? "", v.product_visit_no ?? "", v.updated_at || ""])
     );
     sendCsv(res, "votes.csv", csv);
   } catch (e) { console.error(e); res.status(500).json({ error: "export failed" }); }
@@ -493,11 +501,15 @@ app.get("/api/admin/export/hotel_events.csv", requireAdmin, async (_req, res) =>
       { detail: "product_page", exit: "exit_review", list: "search_page" }[(savesState[r.pid] || {})[r.hotel_id]] || "",
       (r.review_ms / 1000).toFixed(1), r.review_ms, r.review_seen || 0, r.review_total || 0,
       ((r.hover_ms || 0) / 1000).toFixed(1), r.hover_ms || 0,
+      ((r.ai_vis_ms||0)/1000).toFixed(1), ((r.ai_hov_ms||0)/1000).toFixed(1), ((r.desc_vis_ms||0)/1000).toFixed(1), ((r.desc_hov_ms||0)/1000).toFixed(1),
+      ((r.rating_vis_ms||0)/1000).toFixed(1), ((r.rating_hov_ms||0)/1000).toFixed(1), ((r.price_vis_ms||0)/1000).toFixed(1), ((r.price_hov_ms||0)/1000).toFixed(1), ((r.reviews_hov_ms||0)/1000).toFixed(1),
       r.ai_search == null ? "" : (r.ai_search ? "yes" : "no"), r.ai_product == null ? "" : (r.ai_product ? "yes" : "no"),
     ]);
     const csv = toCsv(
       ["participant_id", "hotel_id", "hotel_name", "city", "hotel_rating", "hotel_review_count",
-       "list_views", "clicks", "vote", "vote_page", "list_dwell_seconds", "detail_dwell_seconds", "total_dwell_seconds", "list_dwell_ms", "detail_dwell_ms", "total_dwell_ms", "saved", "saved_on_page", "reviews_dwell_seconds", "reviews_dwell_ms", "reviews_scrolled_to", "reviews_shown_total", "card_hover_seconds", "card_hover_ms", "ai_summary_in_search_page", "ai_summary_in_product_page"],
+       "list_views", "clicks", "vote", "vote_page", "list_dwell_seconds", "detail_dwell_seconds", "total_dwell_seconds", "list_dwell_ms", "detail_dwell_ms", "total_dwell_ms", "saved", "saved_on_page", "reviews_dwell_seconds", "reviews_dwell_ms", "reviews_scrolled_to", "reviews_shown_total", "card_hover_seconds", "card_hover_ms",
+      "ai_summary_visible_seconds", "ai_summary_hover_seconds", "description_visible_seconds", "description_hover_seconds",
+      "rating_visible_seconds", "rating_hover_seconds", "price_visible_seconds", "price_hover_seconds", "reviews_hover_seconds", "ai_summary_in_search_page", "ai_summary_in_product_page"],
       rows
     );
     sendCsv(res, "hotel_events.csv", csv);
@@ -666,8 +678,9 @@ app.get("/api/admin/export/saves.csv", requireAdmin, async (_req, res) => {
     const rows = (await db.allSaveEvents()).map(e => { const h = hotels[e.hotelId] || {};
       const still = (state[e.pid] || {})[e.hotelId] !== undefined;
       const page = e.source === "detail" ? "product_page" : e.source === "exit" ? "exit_review" : "search_page";
-      return [e.pid, e.hotelId, h.name || "", h.cityName || h.city || "", e.action, page, still ? "yes" : "no", e.created]; });
-    sendCsv(res, "saves.csv", toCsv(["participant_id", "hotel_id", "hotel_name", "city", "action", "page", "still_saved", "at"], rows));
+      const ad = (e.afterDetail ?? e.after_detail);
+      return [e.pid, e.hotelId, h.name || "", h.cityName || h.city || "", e.action, page, ad == null ? "" : (ad ? "yes" : "no"), e.listNo ?? "", e.productNo ?? "", still ? "yes" : "no", e.created]; });
+    sendCsv(res, "saves.csv", toCsv(["participant_id", "hotel_id", "hotel_name", "city", "action", "page", "had_opened_product_page", "nth_search_page_visit", "nth_product_page_visit", "still_saved", "at"], rows));
   } catch (e) { console.error(e); res.status(500).json({ error: "export failed" }); }
 });
 
