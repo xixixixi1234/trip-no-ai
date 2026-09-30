@@ -163,7 +163,7 @@ app.get("/api/votes", async (_req, res) => {
 /* next free participant number (P0001, P0002, …). Nothing about the visitor is read or stored —
    the browser remembers its number locally, so a refresh does not consume a new one. */
 app.get("/api/assign-id", async (_req, res) => {
-  try { const n = await db.nextPid(); res.json({ pid: (process.env.PID_PREFIX || "A") + String(n).padStart(4, "0") }); }
+  try { const n = await db.nextPid(); res.json({ pid: (process.env.PID_PREFIX || "B") + String(n).padStart(4, "0") }); }
   catch (e) { console.error(e); res.status(500).json({ error: "failed" }); }
 });
 
@@ -931,7 +931,7 @@ const ADMIN_HTML = `<!doctype html>
     </div>
     <div class="cards">
       <div class="card"><div class="k">Participants</div><div class="v" id="s-parts">–</div></div>
-      <div class="card"><div class="k">Likes</div><div class="v up" id="s-up">–</div></div>
+      <div class="card"><div class="k">Saves</div><div class="v up" id="s-up">–</div></div>
       <div class="card"><div class="k">Dislikes</div><div class="v down" id="s-down">–</div></div>
       <div class="card"><div class="k">Bookmarked site</div><div class="v" id="s-fav">–</div></div>
       <div class="card"><div class="k">Total time</div><div class="v" id="s-time">–</div></div>
@@ -941,7 +941,7 @@ const ADMIN_HTML = `<!doctype html>
     <p class="sub">One row per participant ID: hotels liked / disliked, hotels viewed, average time per hotel (list + detail, over hotels they spent time on), total time on site, whether they bookmarked the site, and whether they agreed to the welcome text. Auto-refreshes every 20s.</p>
     <div id="perParticipant"></div>
 
-    <details style="margin-top:22px"><summary style="cursor:pointer;font-weight:600">Votes by hotel (all hotels, including 0 votes)</summary><div id="breakdown" style="margin-top:10px"></div></details>
+    <details style="margin-top:22px"><summary style="cursor:pointer;font-weight:600">Saves &amp; dislikes by hotel (all hotels, including 0)</summary><div id="breakdown" style="margin-top:10px"></div></details>
     <details style="margin-top:12px"><summary style="cursor:pointer;font-weight:600">Recent vote events</summary><div id="recent" style="margin-top:10px"></div></details>
   </div>
 
@@ -1492,7 +1492,7 @@ You can now close this window and return to the questionnaire."></textarea>
       const { participants } = await r1.json();
       const { breakdown, recent } = await r2.json();
       document.getElementById('s-parts').textContent = participants.length;
-      document.getElementById('s-up').textContent = participants.reduce((a,p)=>a+(p.likes||0),0);
+      document.getElementById('s-up').textContent = breakdown.reduce((a,b)=>a+(b.saves||0),0);
       document.getElementById('s-down').textContent = participants.reduce((a,p)=>a+(p.dislikes||0),0);
       document.getElementById('s-fav').textContent = participants.filter(p=>p.siteFav).length;
       document.getElementById('s-time').textContent = fmtDur(participants.reduce((a,p)=>a+(p.totalMs||0),0));
@@ -1500,18 +1500,18 @@ You can now close this window and return to the questionnaire."></textarea>
       const pp = document.getElementById('perParticipant');
       if (!participants.length) { pp.innerHTML = '<div class="empty">No participants yet.</div>'; }
       else {
-        pp.innerHTML = '<table><thead><tr><th>Participant</th><th class="n">Liked<br><span class="muted" style="font-weight:400">search / product</span></th><th class="n">Disliked<br><span class="muted" style="font-weight:400">search / product</span></th><th class="n">Hotels viewed</th><th class="n">Clicked</th><th class="n">Avg / hotel</th><th class="n">Avg s</th><th class="n">Total time</th><th class="n">Total s</th><th>Bookmarked</th><th>Agreed</th><th>AI in search</th><th>AI in product</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>' +
-          participants.map(function(p){ return '<tr><td><b>'+esc(p.pid)+'</b></td><td class="n up">'+(p.likes||0)+' <span class="muted">('+(p.likesList||0)+' / '+(p.likesDetail||0)+')</span></td><td class="n down">'+(p.dislikes||0)+' <span class="muted">('+(p.dislikesList||0)+' / '+(p.dislikesDetail||0)+')</span></td><td class="n">'+(p.hotelsSeen||0)+'</td><td class="n">'+(p.hotelsClicked||0)+'</td><td class="n">'+fmtDur(p.avgHotelMs||0)+'</td><td class="n muted">'+fmtSec(p.avgHotelMs)+'</td><td class="n">'+fmtDur(p.totalMs||0)+'</td><td class="n muted">'+fmtSec(p.totalMs)+'</td><td>'+(p.siteFav?'Yes':'No')+'</td><td>'+(p.consentedAt?'Yes':'No')+'</td><td>'+(p.aiSearch==null?'—':p.aiSearch?'On':'Off')+'</td><td>'+(p.aiProduct==null?'—':p.aiProduct?'On':'Off')+'</td><td class="muted">'+(p.firstSeen?new Date(p.firstSeen).toLocaleString():'—')+'</td><td class="muted">'+(p.lastSeen?new Date(p.lastSeen).toLocaleString():'—')+'</td></tr>'; }).join('') +
+        pp.innerHTML = '<table><thead><tr><th>Participant</th><th class="n">Saved</th><th class="n">Disliked<br><span class="muted" style="font-weight:400">search / product</span></th><th class="n">Hotels viewed</th><th class="n">Clicked</th><th class="n">Avg / hotel</th><th class="n">Avg s</th><th class="n">Total time</th><th class="n">Total s</th><th>Bookmarked</th><th>Agreed</th><th>AI in search</th><th>AI in product</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>' +
+          participants.map(function(p){ return '<tr><td><b>'+esc(p.pid)+'</b></td><td class="n up">'+((p.favHotels||[]).length)+'</td><td class="n down">'+(p.dislikes||0)+' <span class="muted">('+(p.dislikesList||0)+' / '+(p.dislikesDetail||0)+')</span></td><td class="n">'+(p.hotelsSeen||0)+'</td><td class="n">'+(p.hotelsClicked||0)+'</td><td class="n">'+fmtDur(p.avgHotelMs||0)+'</td><td class="n muted">'+fmtSec(p.avgHotelMs)+'</td><td class="n">'+fmtDur(p.totalMs||0)+'</td><td class="n muted">'+fmtSec(p.totalMs)+'</td><td>'+(p.siteFav?'Yes':'No')+'</td><td>'+(p.consentedAt?'Yes':'No')+'</td><td>'+(p.aiSearch==null?'—':p.aiSearch?'On':'Off')+'</td><td>'+(p.aiProduct==null?'—':p.aiProduct?'On':'Off')+'</td><td class="muted">'+(p.firstSeen?new Date(p.firstSeen).toLocaleString():'—')+'</td><td class="muted">'+(p.lastSeen?new Date(p.lastSeen).toLocaleString():'—')+'</td></tr>'; }).join('') +
           '</tbody></table>';
       }
 
       const bd = document.getElementById('breakdown');
       if (!breakdown.length) { bd.innerHTML = '<div class="empty">No hotels in the database.</div>'; }
       else {
-        bd.innerHTML = '<div class="muted" style="margin-bottom:8px">All '+breakdown.length+' hotels, including those with 0 votes. Sorted by net score.</div>'+
-          '<table><thead><tr><th>Hotel</th><th>City</th><th class="n">Rating</th><th class="n">Likes</th><th class="n">Dislikes</th><th class="n">Net</th></tr></thead><tbody>' +
+        bd.innerHTML = '<div class="muted" style="margin-bottom:8px">All '+breakdown.length+' hotels, including those with 0 saves. Saves = participants currently saving the hotel. Net = saves − dislikes.</div>'+
+          '<table><thead><tr><th>Hotel</th><th>City</th><th class="n">Rating</th><th class="n">Saves</th><th class="n">Dislikes</th><th class="n">Net</th></tr></thead><tbody>' +
           breakdown.map(function(b){ return '<tr><td>'+esc(b.name||b.id)+'</td><td>'+esc(b.city||'')+'</td><td class="n">'+(b.rating!=null?Number(b.rating).toFixed(1):'—')+'</td>'+
-            '<td class="n up">'+b.up+'</td><td class="n down">'+b.down+'</td><td class="n">'+(b.net>=0?'+':'')+b.net+'</td></tr>'; }).join('') +
+            '<td class="n up">'+(b.saves||0)+'</td><td class="n down">'+b.down+'</td><td class="n">'+(b.net>=0?'+':'')+b.net+'</td></tr>'; }).join('') +
           '</tbody></table>';
       }
       const rc = document.getElementById('recent');
@@ -1756,7 +1756,7 @@ You can now close this window and return to the questionnaire."></textarea>
           '</div>'+
           '<div style="display:flex;gap:18px;flex-wrap:wrap;margin:10px 0 4px;font-size:13.5px">'+
             '<span>Dwell time: <b>'+fmtDur(p.totalMs)+'</b></span>'+
-            '<span>Total likes: <b>'+(p.upvotes||0)+'</b></span>'+
+            '<span>Hotels saved: <b>'+((p.favHotels||[]).length)+'</b></span>'+
             '<span>Saved site: <b>'+(p.siteFav?'Yes':'No')+'</b></span>'+
           '</div>'+
           '<div style="font-size:13.5px;margin-bottom:8px">Saved hotels: '+favList+'</div>'+
