@@ -896,22 +896,27 @@ export async function voteStats() {
 
 /* per-hotel tally joined with hotel names, for the admin table */
 export async function voteBreakdown() {
-  // every hotel is listed, including those with no votes yet
+  // every hotel is listed, including those nobody saved or disliked yet;
+  // saves = participants currently saving the hotel, net = saves - dislikes
   if (!HAS_DB) {
+    const savesByHotel = {};
+    for (const m of Object.values(mem.saves)) for (const hid of Object.keys(m)) savesByHotel[hid] = (savesByHotel[hid] || 0) + 1;
     return mem.hotels.map(h => {
       const v = mem.votes[h.id] || {};
-      return { id: h.id, name: h.name, city: h.cityName || h.city, rating: h.rating ?? null, up: v.up || 0, down: v.down || 0, net: (v.up || 0) - (v.down || 0) };
-    }).sort((a, b) => (b.net - a.net) || ((b.up + b.down) - (a.up + a.down)) || a.name.localeCompare(b.name));
+      const saves = savesByHotel[h.id] || 0;
+      return { id: h.id, name: h.name, city: h.cityName || h.city, rating: h.rating ?? null, saves, up: v.up || 0, down: v.down || 0, net: saves - (v.down || 0) };
+    }).sort((a, b) => (b.net - a.net) || ((b.saves + b.down) - (a.saves + a.down)) || a.name.localeCompare(b.name));
   }
   const { rows } = await pool.query(
     `SELECT h.id, h.name, h.city_name AS city, h.rating,
+       (SELECT COUNT(*) FROM saves s WHERE s.hotel_id=h.id)::int AS saves,
        COALESCE(COUNT(v.*) FILTER (WHERE v.choice='up'),0)::int   AS up,
        COALESCE(COUNT(v.*) FILTER (WHERE v.choice='down'),0)::int AS down
      FROM hotels h LEFT JOIN votes v ON v.hotel_id=h.id
      GROUP BY h.id, h.name, h.city_name, h.rating`
   );
-  return rows.map(r => ({ ...r, net: r.up - r.down }))
-    .sort((a, b) => (b.net - a.net) || ((b.up + b.down) - (a.up + a.down)) || a.name.localeCompare(b.name));
+  return rows.map(r => ({ ...r, net: r.saves - r.down }))
+    .sort((a, b) => (b.net - a.net) || ((b.saves + b.down) - (a.saves + a.down)) || a.name.localeCompare(b.name));
 }
 
 /* raw recent vote events (admin "all user data") */
@@ -1243,7 +1248,7 @@ export async function participantSummaries() {
     for (const k of Object.keys(votesByPid)) pids.add(k);
     return [...pids].map(pid => {
       const p = mem.participants[pid] || {};
-      const favs = [...(mem.hotelFavs[pid] || [])];
+      const favs = Object.keys(mem.saves[pid] || {});
       const events = mem.hotelEvents[pid] || {};
       const nameOf = id => (mem.hotels.find(h => h.id === id) || {}).name || id;
       const hotelList = Object.values(events);
@@ -1275,7 +1280,7 @@ export async function participantSummaries() {
     }).sort((a, b) => b.totalMs - a.totalMs);
   }
   const parts = await pool.query("SELECT pid,total_ms,site_fav,first_seen,last_seen,consented_at,exited_at,booked_hotel,condition,ai_search,ai_product FROM participants");
-  const favs = await pool.query(`SELECT f.pid, f.hotel_id, h.name FROM hotel_favorites f LEFT JOIN hotels h ON h.id=f.hotel_id`);
+  const favs = await pool.query(`SELECT f.pid, f.hotel_id, h.name FROM saves f LEFT JOIN hotels h ON h.id=f.hotel_id`);
   const events = await pool.query(`SELECT e.pid, e.hotel_id, h.name, h.rating, h.review_count, e.seen, e.clicks, e.list_ms, e.detail_ms, e.review_ms, e.review_seen, e.review_total, v.choice, v.source
                                      FROM hotel_events e LEFT JOIN hotels h ON h.id=e.hotel_id
                                      LEFT JOIN votes v ON v.voter_id=e.pid AND v.hotel_id=e.hotel_id`);
