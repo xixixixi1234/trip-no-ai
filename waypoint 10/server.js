@@ -433,16 +433,48 @@ function toCsv(headers, rows) {
   for (const r of rows) lines.push(r.map(csvCell).join(","));
   return "\uFEFF" + lines.join("\r\n"); // BOM so Excel reads UTF-8
 }
+/* optional export window, from ?from=YYYY-MM-DD&to=YYYY-MM-DD (interpreted as whole days, UTC) */
+function exportRange(req) {
+  const ok = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
+  const q = (req && req.query) || {};
+  const fromStr = ok(q.from) ? q.from : "", toStr = ok(q.to) ? q.to : "";
+  if (!fromStr && !toStr) return null;
+  return { fromStr, toStr,
+           from: fromStr ? new Date(fromStr + "T00:00:00Z") : null,
+           to: toStr ? new Date(toStr + "T23:59:59.999Z") : null };
+}
+/* pids whose FIRST VISIT falls inside the export window (null = no filter) */
+async function allowedPids(req) {
+  const r = exportRange(req);
+  if (!r) return null;
+  const set = new Set();
+  for (const p of await db.participantSummaries()) {
+    const t = p.firstSeen ? new Date(p.firstSeen) : null;
+    if (!t || isNaN(t)) continue;
+    if (r.from && t < r.from) continue;
+    if (r.to && t > r.to) continue;
+    set.add(p.pid);
+  }
+  return set;
+}
 function sendCsv(res, filename, csv) {
+  const q = (res.req && res.req.query) || {};
+  let stamp = typeof q.t === "string" && /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}$/.test(q.t) ? q.t : null;   // the admin page passes the downloader's local time
+  if (!stamp) { const d = new Date(), p2 = n => String(n).padStart(2, "0");
+    stamp = `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}_${p2(d.getUTCHours())}-${p2(d.getUTCMinutes())}`; }
+  const r = exportRange(res.req);
+  const rangeTag = r ? `_${r.fromStr || "start"}~${r.toStr || "now"}` : "";
+  const name = filename.replace(/\.csv$/i, "") + rangeTag + "_" + stamp + ".csv";
   res.set("Content-Type", "text/csv; charset=utf-8");
-  res.set("Content-Disposition", `attachment; filename="${filename}"`);
+  res.set("Content-Disposition", `attachment; filename="${name}"`);
   res.send(csv);
 }
 
 // export raw vote events
-app.get("/api/admin/export/votes.csv", requireAdmin, async (_req, res) => {
+app.get("/api/admin/export/votes.csv", requireAdmin, async (req, res) => {
   try {
-    const rows = await db.recentVotes(1000000);
+    const allow = await allowedPids(req);
+    const rows = (await db.recentVotes(1000000)).filter(v => !allow || allow.has(v.voter_id));
     const csv = toCsv(
       ["participant_id", "hotel_id", "hotel_name", "action", "result", "page", "had_opened_product_page", "nth_search_page_visit", "nth_product_page_visit", "time"],
       rows.map(v => [v.voter_id, v.hotel_id, v.hotel_name || "", v.choice === "up" ? "like" : "dislike", v.result || "set", v.source || "", v.after_detail == null ? "" : (v.after_detail ? "yes" : "no"), v.list_visit_no ?? "", v.product_visit_no ?? "", v.updated_at || ""])
@@ -452,11 +484,12 @@ app.get("/api/admin/export/votes.csv", requireAdmin, async (_req, res) => {
 });
 
 // export per-participant summary (one row per participant)
-app.get("/api/admin/export/participants.csv", requireAdmin, async (_req, res) => {
+app.get("/api/admin/export/participants.csv", requireAdmin, async (req, res) => {
   try {
+    const allow = await allowedPids(req);
     const savesState = await db.allSavesState();
     const hotelName = Object.fromEntries((await db.listHotels({})).map(h => [h.id, h.name]));
-    const ps = await db.participantSummaries();
+    const ps = (await db.participantSummaries()).filter(p => !allow || allow.has(p.pid));
     const rows = ps.map(p => [
       p.pid,
       p.likes || 0, p.dislikes || 0,
@@ -487,10 +520,11 @@ app.get("/api/admin/export/participants.csv", requireAdmin, async (_req, res) =>
 });
 
 // export one row per participant × hotel: hotel facts + views/clicks + vote + dwell times
-app.get("/api/admin/export/hotel_events.csv", requireAdmin, async (_req, res) => {
+app.get("/api/admin/export/hotel_events.csv", requireAdmin, async (req, res) => {
   try {
+    const allow = await allowedPids(req);
     const savesState = await db.allSavesState();
-    const rows = (await db.hotelEventRows()).map(r => [
+    const rows = (await db.hotelEventRows()).filter(r => !allow || allow.has(r.pid)).map(r => [
       r.pid, r.hotel_id, r.hotel_name, r.city, r.rating, r.review_count,
       r.seen, r.clicks,
       r.vote === "up" ? "like" : r.vote === "down" ? "dislike" : "",
@@ -671,11 +705,12 @@ function firstSentenceOf(text) {
 }const chars = v => String(v || "").trim().length;
 const words = v => { const t = String(v || "").trim(); return t ? t.split(/\s+/).length : 0; };
 const mean = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
-app.get("/api/admin/export/saves.csv", requireAdmin, async (_req, res) => {
+app.get("/api/admin/export/saves.csv", requireAdmin, async (req, res) => {
   try {
+    const allow = await allowedPids(req);
     const hotels = Object.fromEntries((await db.listHotels({})).map(h => [h.id, h]));
     const state = await db.allSavesState();
-    const rows = (await db.allSaveEvents()).map(e => { const h = hotels[e.hotelId] || {};
+    const rows = (await db.allSaveEvents()).filter(e => !allow || allow.has(e.pid)).map(e => { const h = hotels[e.hotelId] || {};
       const still = (state[e.pid] || {})[e.hotelId] !== undefined;
       const page = e.source === "detail" ? "product_page" : e.source === "exit" ? "exit_review" : "search_page";
       const ad = (e.afterDetail ?? e.after_detail);
@@ -684,11 +719,12 @@ app.get("/api/admin/export/saves.csv", requireAdmin, async (_req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: "export failed" }); }
 });
 
-app.get("/api/admin/export/review_votes.csv", requireAdmin, async (_req, res) => {
+app.get("/api/admin/export/review_votes.csv", requireAdmin, async (req, res) => {
   try {
+    const allow = await allowedPids(req);
     const reviews = Object.fromEntries((await db.allReviewsFlat()).map(r => [String(r.id), r]));
     const hotels = Object.fromEntries((await db.listHotels({})).map(h => [h.id, h]));
-    const rows = (await db.allReviewVotes()).map(v => {
+    const rows = (await db.allReviewVotes()).filter(v => !allow || allow.has(v.pid)).map(v => {
       const r = reviews[String(v.reviewId)] || {}; const h = hotels[v.hotelId || r.hotelId] || {};
       return [v.pid, v.reviewId, v.choice === "up" ? "like" : "dislike", v.hotelId || r.hotelId || "", h.name || "", h.cityName || h.city || "",
               r.author || "", r.rating ?? "", r.title || "", v.updated];
@@ -919,6 +955,12 @@ const ADMIN_HTML = `<!doctype html>
 
   <!-- STATS -->
   <div class="view active" id="view-stats">
+    <div class="panel" style="margin-bottom:12px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:10px 14px">
+      <b style="font-size:13.5px">Export window</b>
+      <label style="font-size:13px">From <input type="date" id="expFrom" style="font:inherit;font-size:13px;padding:3px 6px;border:1px solid var(--line);border-radius:6px"></label>
+      <label style="font-size:13px">To <input type="date" id="expTo" style="font:inherit;font-size:13px;padding:3px 6px;border:1px solid var(--line);border-radius:6px"></label>
+      <span class="muted" style="font-size:12.5px">Participant-data exports keep only participants whose <b>first visit</b> falls in this window (whole days, UTC). Leave empty for everything. Every file name gets the window + your download time appended.</span>
+    </div>
     <div class="exports">
       <a class="dl" href="/api/admin/export/participants.csv">Export per-participant CSV</a>
       <a class="dl" href="/api/admin/export/hotel_events.csv">Export participant × hotel CSV</a>
@@ -1199,6 +1241,17 @@ You can now close this window and return to the questionnaire."></textarea>
 
 <script>
   function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+  // every export link carries the downloader's local time (for the file name) and the chosen date window
+  document.addEventListener('click', function(ev){
+    const a = ev.target.closest && ev.target.closest('a.dl'); if (!a) return;
+    const p2 = n => String(n).padStart(2,'0'); const d = new Date();
+    const u = new URL(a.getAttribute('href'), location.origin);
+    u.searchParams.set('t', d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate())+'_'+p2(d.getHours())+'-'+p2(d.getMinutes()));
+    const f = document.getElementById('expFrom'), t = document.getElementById('expTo');
+    if (f && f.value) u.searchParams.set('from', f.value); else u.searchParams.delete('from');
+    if (t && t.value) u.searchParams.set('to', t.value); else u.searchParams.delete('to');
+    a.setAttribute('href', u.pathname + u.search);
+  });
   function fmtDur(ms){
     ms = Number(ms)||0; const s = Math.round(ms/1000);
     if (s < 60) return s + 's';
