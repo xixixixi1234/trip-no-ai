@@ -176,9 +176,17 @@ export async function init() {
   await pool.query("ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS hover_ms BIGINT DEFAULT 0");
   for (const c of ["ai_vis_ms","ai_hov_ms","desc_vis_ms","desc_hov_ms","rating_vis_ms","rating_hov_ms","price_vis_ms","price_hov_ms","reviews_hov_ms"])
     await pool.query(`ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS ${c} BIGINT DEFAULT 0`);
+  for (const c of ["seen_pre","list_ms_pre","hover_ms_pre","ai_vis_ms_pre","ai_hov_ms_pre","desc_vis_ms_pre","desc_hov_ms_pre","rating_vis_ms_pre","rating_hov_ms_pre","price_vis_ms_pre","price_hov_ms_pre"])
+    await pool.query(`ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS ${c} BIGINT DEFAULT 0`);
+  for (const c of ["first_seen_at","first_click_at","last_event_at"])
+    await pool.query(`ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS ${c} TIMESTAMPTZ`);
+  await pool.query("ALTER TABLE participants ADD COLUMN IF NOT EXISTS tutorial_done_at TIMESTAMPTZ");
   await pool.query("ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS review_seen INTEGER DEFAULT 0");
   await pool.query("ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS review_total INTEGER DEFAULT 0");
   await pool.query("CREATE TABLE IF NOT EXISTS issued_pids (num INTEGER PRIMARY KEY)");
+  await pool.query(`CREATE TABLE IF NOT EXISTS interaction_events (
+    id BIGSERIAL PRIMARY KEY, pid TEXT, hotel_id TEXT, event TEXT, ms INTEGER,
+    client_at TIMESTAMPTZ, at TIMESTAMPTZ DEFAULT now())`);
   await pool.query(`CREATE TABLE IF NOT EXISTS saves (
     pid      TEXT,
     hotel_id TEXT,
@@ -200,6 +208,8 @@ export async function init() {
   await pool.query("ALTER TABLE save_events ADD COLUMN IF NOT EXISTS product_visit_no INTEGER");
   await pool.query("ALTER TABLE vote_events ADD COLUMN IF NOT EXISTS list_visit_no INTEGER");
   await pool.query("ALTER TABLE vote_events ADD COLUMN IF NOT EXISTS product_visit_no INTEGER");
+  for (const t of ["save_events", "vote_events"]) for (const c of ["ai_vis_ms_at", "ai_hov_ms_at"])
+    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS ${c} BIGINT`);
   await pool.query(`CREATE TABLE IF NOT EXISTS review_votes (
     pid       TEXT,
     review_id TEXT,
@@ -623,10 +633,10 @@ export async function resetStudyData() {
   if (!HAS_DB) {
     mem.votes = {}; mem.voteLog = []; mem.participants = {}; mem.hotelFavs = {};
     mem.hotelEvents = {}; mem.reviewVotes = {}; mem.saves = {}; mem.saveEvents = [];
-    mem.issuedPids = new Set();                                  // the number pool starts fresh too
+    mem.issuedPids = new Set(); mem.interactions = [];                                  // the number pool starts fresh too
     return { ok: true };
   }
-  for (const t of ["votes", "vote_events", "participants", "hotel_favorites", "hotel_events", "review_votes", "saves", "save_events", "issued_pids"]) await pool.query(`DELETE FROM ${t}`);
+  for (const t of ["votes", "vote_events", "participants", "hotel_favorites", "hotel_events", "review_votes", "saves", "save_events", "issued_pids", "interaction_events"]) await pool.query(`DELETE FROM ${t}`);
   return { ok: true };
 }
 /* Restore all CONTENT to the shipped defaults: hotel texts/prices from src/cities.js,
@@ -654,6 +664,43 @@ export async function resetContent() {
   return { ok: true };
 }
 
+/* timestamped interaction log: every detail-page click and every hover segment */
+const INTERACTION_TYPES = new Set(["click", "card_hover", "ai_hover", "desc_hover", "rating_hover", "price_hover", "reviews_hover"]);
+export async function logInteractions(pid, evs) {
+  if (!pid || !Array.isArray(evs) || !evs.length) return;
+  const rows = [];
+  for (const e of evs.slice(0, 400)) {
+    if (!e || !INTERACTION_TYPES.has(e.type) || !e.hotelId) continue;
+    const ms = Math.max(0, Math.min(10 * 60 * 1000, Math.round(Number(e.ms) || 0)));
+    const t = Number(e.at);
+    const clientAt = Number.isFinite(t) && t > 1577836800000 && t < 4102444800000 ? new Date(t) : null;
+    rows.push([pid, String(e.hotelId).slice(0, 80), e.type, ms, clientAt]);
+  }
+  if (!rows.length) return;
+  if (!HAS_DB) {
+    mem.interactions = mem.interactions || [];
+    for (const r of rows) mem.interactions.push({ pid: r[0], hotel_id: r[1], event: r[2], ms: r[3], client_at: r[4] ? r[4].toISOString() : null, at: new Date().toISOString() });
+    return;
+  }
+  const params = [], chunks = [];
+  rows.forEach((r, i) => { const o = i * 5; chunks.push(`($${o + 1},$${o + 2},$${o + 3},$${o + 4},$${o + 5})`); params.push(...r); });
+  await pool.query(`INSERT INTO interaction_events(pid,hotel_id,event,ms,client_at) VALUES ${chunks.join(",")}`, params);
+}
+export async function allInteractions() {
+  if (!HAS_DB) return [...(mem.interactions || [])];
+  const { rows } = await pool.query("SELECT pid, hotel_id, event, ms, client_at, at FROM interaction_events ORDER BY id");
+  return rows.map(r => ({ pid: r.pid, hotel_id: r.hotel_id, event: r.event, ms: r.ms,
+    client_at: r.client_at ? new Date(r.client_at).toISOString() : null, at: new Date(r.at).toISOString() }));
+}
+
+/* the moment the participant finished (or skipped out of) the tutorial — kept once */
+export async function setTutorialDone(pid) {
+  if (!pid) return { ok: false };
+  if (!HAS_DB) { const p = mem.participants[pid]; if (p && !p.tutorialDoneAt) p.tutorialDoneAt = new Date().toISOString(); return { ok: true }; }
+  await pool.query("UPDATE participants SET tutorial_done_at=COALESCE(tutorial_done_at, now()) WHERE pid=$1", [pid]);
+  return { ok: true };
+}
+
 /* participant entered the hotel list (search page) once more; returns the running count */
 export async function bumpListVisit(pid) {
   if (!pid) return 0;
@@ -666,31 +713,32 @@ export async function bumpListVisit(pid) {
 async function seqContext(pid, hotelId) {
   if (!HAS_DB) {
     const p = mem.participants[pid] || {};
-    const clicks = ((mem.hotelEvents[pid] || {})[hotelId] || {}).click || 0;
-    return { listNo: p.listVisits || 0, productNo: clicks };
+    const e = (mem.hotelEvents[pid] || {})[hotelId] || {};
+    return { listNo: p.listVisits || 0, productNo: e.click || 0, aiVis: e.ai_vis_ms || 0, aiHov: e.ai_hov_ms || 0 };
   }
   const [a, b] = await Promise.all([
     pool.query("SELECT list_visits FROM participants WHERE pid=$1", [pid]),
-    pool.query("SELECT clicks FROM hotel_events WHERE pid=$1 AND hotel_id=$2", [pid, hotelId]),
+    pool.query("SELECT clicks, COALESCE(ai_vis_ms,0) AS ai_vis_ms, COALESCE(ai_hov_ms,0) AS ai_hov_ms FROM hotel_events WHERE pid=$1 AND hotel_id=$2", [pid, hotelId]),
   ]);
-  return { listNo: a.rows[0]?.list_visits || 0, productNo: b.rows[0]?.clicks || 0 };
+  return { listNo: a.rows[0]?.list_visits || 0, productNo: b.rows[0]?.clicks || 0,
+           aiVis: Number(b.rows[0]?.ai_vis_ms) || 0, aiHov: Number(b.rows[0]?.ai_hov_ms) || 0 };
 }
 
 /* ---------------- saved hotels (the "Saves" list) ---------------- */
 export async function setSave(pid, hotelId, on, source) {
   source = ["detail", "exit"].includes(source) ? source : "list";
-  const { listNo, productNo } = await seqContext(pid, hotelId);
+  const { listNo, productNo, aiVis, aiHov } = await seqContext(pid, hotelId);
   const afterDetail = source === "detail" ? true : productNo > 0;
   if (!HAS_DB) {
     const m = mem.saves[pid] || (mem.saves[pid] = {});
     if (on) m[hotelId] = { source, created: Date.now() }; else delete m[hotelId];
-    mem.saveEvents.push({ pid, hotelId, action: on ? "save" : "unsave", source, afterDetail, listNo, productNo, created: new Date().toISOString() });
+    mem.saveEvents.push({ pid, hotelId, action: on ? "save" : "unsave", source, afterDetail, listNo, productNo, aiVis, aiHov, created: new Date().toISOString() });
     return { ok: true, saved: Boolean(on) };
   }
   if (on) await pool.query(`INSERT INTO saves(pid,hotel_id,source) VALUES($1,$2,$3) ON CONFLICT (pid,hotel_id) DO NOTHING`, [pid, hotelId, source]);
   else await pool.query("DELETE FROM saves WHERE pid=$1 AND hotel_id=$2", [pid, hotelId]);
-  await pool.query("INSERT INTO save_events(pid,hotel_id,action,source,after_detail,list_visit_no,product_visit_no) VALUES($1,$2,$3,$4,$5,$6,$7)",
-    [pid, hotelId, on ? "save" : "unsave", source, afterDetail, listNo, productNo]);
+  await pool.query("INSERT INTO save_events(pid,hotel_id,action,source,after_detail,list_visit_no,product_visit_no,ai_vis_ms_at,ai_hov_ms_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+    [pid, hotelId, on ? "save" : "unsave", source, afterDetail, listNo, productNo, aiVis, aiHov]);
   return { ok: true, saved: Boolean(on) };
 }
 export async function getSaves(pid) {
@@ -701,8 +749,8 @@ export async function getSaves(pid) {
 }
 export async function allSaveEvents() {
   if (!HAS_DB) return mem.saveEvents.slice();
-  const { rows } = await pool.query("SELECT pid, hotel_id, action, source, after_detail, list_visit_no, product_visit_no, created FROM save_events ORDER BY id");
-  return rows.map(r => ({ pid: r.pid, hotelId: r.hotel_id, action: r.action, source: r.source, afterDetail: r.after_detail, listNo: r.list_visit_no, productNo: r.product_visit_no, created: new Date(r.created).toISOString() }));
+  const { rows } = await pool.query("SELECT pid, hotel_id, action, source, after_detail, list_visit_no, product_visit_no, ai_vis_ms_at, ai_hov_ms_at, created FROM save_events ORDER BY id");
+  return rows.map(r => ({ pid: r.pid, hotelId: r.hotel_id, action: r.action, source: r.source, afterDetail: r.after_detail, listNo: r.list_visit_no, productNo: r.product_visit_no, aiVis: r.ai_vis_ms_at == null ? null : Number(r.ai_vis_ms_at), aiHov: r.ai_hov_ms_at == null ? null : Number(r.ai_hov_ms_at), created: new Date(r.created).toISOString() }));
 }
 export async function allSavesState() {   // { pid: { hotelId: source } }
   const out = {};
@@ -815,7 +863,7 @@ export async function importHotels(rows) {
 /* ---------------- votes ---------------- */
 export async function vote({ hotelId, voterId, choice, source }) {
   source = source === "detail" ? "detail" : "list";
-  const { listNo, productNo } = await seqContext(voterId, hotelId);
+  const { listNo, productNo, aiVis, aiHov } = await seqContext(voterId, hotelId);
   const afterDetail = source === "detail" ? true : productNo > 0;
   if (!HAS_DB) {
     const e = mem.votes[hotelId] || { up: 0, down: 0, voters: {}, sources: {} };
@@ -825,7 +873,7 @@ export async function vote({ hotelId, voterId, choice, source }) {
     if (prev === choice) { e[choice] = Math.max(0, e[choice] - 1); delete e.voters[voterId]; delete e.sources[voterId]; result = "cleared"; }
     else { if (prev) e[prev] = Math.max(0, e[prev] - 1); e[choice] = (e[choice] || 0) + 1; e.voters[voterId] = choice; e.sources[voterId] = source; result = "set"; }
     mem.votes[hotelId] = e;
-    mem.voteLog.push({ voter_id: voterId, hotel_id: hotelId, choice, result, source, after_detail: afterDetail, list_visit_no: listNo, product_visit_no: productNo, at: new Date().toISOString() });
+    mem.voteLog.push({ voter_id: voterId, hotel_id: hotelId, choice, result, source, after_detail: afterDetail, list_visit_no: listNo, product_visit_no: productNo, ai_vis_ms_at: aiVis, ai_hov_ms_at: aiHov, at: new Date().toISOString() });
     return { hotelId, up: e.up, down: e.down, your: e.voters[voterId] || null };
   }
   const cur = await pool.query("SELECT choice FROM votes WHERE hotel_id=$1 AND voter_id=$2", [hotelId, voterId]);
@@ -842,7 +890,7 @@ export async function vote({ hotelId, voterId, choice, source }) {
     );
     result = "set";
   }
-  await pool.query("INSERT INTO vote_events(voter_id,hotel_id,choice,result,source,after_detail,list_visit_no,product_visit_no) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", [voterId, hotelId, choice, result, source, afterDetail, listNo, productNo]);
+  await pool.query("INSERT INTO vote_events(voter_id,hotel_id,choice,result,source,after_detail,list_visit_no,product_visit_no,ai_vis_ms_at,ai_hov_ms_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", [voterId, hotelId, choice, result, source, afterDetail, listNo, productNo, aiVis, aiHov]);
   const agg = await pool.query(
     `SELECT
        COUNT(*) FILTER (WHERE choice='up')::int   AS up,
@@ -926,7 +974,7 @@ export async function recentVotes(limit = 200) {
     return [...mem.voteLog].reverse().slice(0, limit).map(v => ({ ...v, hotel_name: nameOf(v.hotel_id), updated_at: v.at }));
   }
   const { rows } = await pool.query(
-    `SELECT v.voter_id, v.hotel_id, h.name AS hotel_name, v.choice, v.result, v.source, v.after_detail, v.list_visit_no, v.product_visit_no, v.at AS updated_at
+    `SELECT v.voter_id, v.hotel_id, h.name AS hotel_name, v.choice, v.result, v.source, v.after_detail, v.list_visit_no, v.product_visit_no, v.ai_vis_ms_at, v.ai_hov_ms_at, v.at AS updated_at
      FROM vote_events v LEFT JOIN hotels h ON h.id=v.hotel_id
      ORDER BY v.at DESC LIMIT $1`, [limit]
   );
@@ -1090,6 +1138,9 @@ const EVENT_COLS = { seen: "seen", click: "clicks", list_ms: "list_ms", detail_m
   ai_vis_ms: "ai_vis_ms", ai_hov_ms: "ai_hov_ms", desc_vis_ms: "desc_vis_ms", desc_hov_ms: "desc_hov_ms", rating_vis_ms: "rating_vis_ms", rating_hov_ms: "rating_hov_ms", price_vis_ms: "price_vis_ms", price_hov_ms: "price_hov_ms", reviews_hov_ms: "reviews_hov_ms" };
 const EVENT_MAX  = { seen: 50, click: 50, list_ms: 10 * 60 * 1000, detail_ms: 10 * 60 * 1000, review_ms: 10 * 60 * 1000, hover_ms: 10 * 60 * 1000, ai_vis_ms: 10*60*1000, ai_hov_ms: 10*60*1000, desc_vis_ms: 10*60*1000, desc_hov_ms: 10*60*1000, rating_vis_ms: 10*60*1000, rating_hov_ms: 10*60*1000, price_vis_ms: 10*60*1000, price_hov_ms: 10*60*1000, reviews_hov_ms: 10*60*1000, review_seen: 500, review_total: 500 };
 const EVENT_SET_MAX = new Set(["review_seen", "review_total"]);   // these store the maximum, not a sum
+/* metrics that also keep a twin counter accumulated only while the participant has
+   NOT yet opened this hotel's product page (clicks = 0) — the "_before_product_page" columns */
+const PRE_TYPES = new Set(["seen", "list_ms", "hover_ms", "ai_vis_ms", "ai_hov_ms", "desc_vis_ms", "desc_hov_ms", "rating_vis_ms", "rating_hov_ms", "price_vis_ms", "price_hov_ms"]);
 export async function trackHotelEvent(pid, hotelId, type, n = 1) {
   if (!pid || !hotelId || !EVENT_COLS[type]) return;
   n = Math.max(0, Math.min(EVENT_MAX[type], Math.round(Number(n) || 0)));
@@ -1097,6 +1148,11 @@ export async function trackHotelEvent(pid, hotelId, type, n = 1) {
   if (!HAS_DB) {
     const m = mem.hotelEvents[pid] || (mem.hotelEvents[pid] = {});
     const e = m[hotelId] || (m[hotelId] = { seen: 0, click: 0, listMs: 0, detailMs: 0, reviewMs: 0, hoverMs: 0, reviewSeen: 0, reviewTotal: 0 });
+    if (PRE_TYPES.has(type) && !e.click) e[EVENT_COLS[type] + "_pre"] = (e[EVENT_COLS[type] + "_pre"] || 0) + n;
+    const nowIso = new Date().toISOString();
+    if (type === "seen" && !e.firstSeenAt) e.firstSeenAt = nowIso;
+    if (type === "click" && !e.firstClickAt) e.firstClickAt = nowIso;
+    e.lastEventAt = nowIso;
     if (type === "seen") e.seen += n; else if (type === "click") e.click += n;
     else if (type === "list_ms") e.listMs += n; else if (type === "detail_ms") e.detailMs += n;
     else if (type === "review_ms") e.reviewMs += n;
@@ -1107,12 +1163,18 @@ export async function trackHotelEvent(pid, hotelId, type, n = 1) {
     return;
   }
   const col = EVENT_COLS[type];
+  const pre = PRE_TYPES.has(type) ? `, ${col}_pre = hotel_events.${col}_pre + CASE WHEN hotel_events.clicks = 0 THEN $3 ELSE 0 END` : "";
+  const stampCols = (type === "seen" ? ",first_seen_at" : type === "click" ? ",first_click_at" : "") + ",last_event_at";
+  const stampVals = (type === "seen" || type === "click" ? ",now()" : "") + ",now()";
+  const stampSet = ", last_event_at=now()"
+    + (type === "seen" ? ", first_seen_at=COALESCE(hotel_events.first_seen_at, now())" : "")
+    + (type === "click" ? ", first_click_at=COALESCE(hotel_events.first_click_at, now())" : "");
   await pool.query(
     EVENT_SET_MAX.has(type)
-      ? `INSERT INTO hotel_events(pid,hotel_id,${col}) VALUES($1,$2,$3)
-         ON CONFLICT (pid,hotel_id) DO UPDATE SET ${col}=GREATEST(hotel_events.${col},$3)`
-      : `INSERT INTO hotel_events(pid,hotel_id,${col}) VALUES($1,$2,$3)
-         ON CONFLICT (pid,hotel_id) DO UPDATE SET ${col}=hotel_events.${col}+$3`,
+      ? `INSERT INTO hotel_events(pid,hotel_id,${col}${stampCols}) VALUES($1,$2,$3${stampVals})
+         ON CONFLICT (pid,hotel_id) DO UPDATE SET ${col}=GREATEST(hotel_events.${col},$3)${pre}${stampSet}`
+      : `INSERT INTO hotel_events(pid,hotel_id,${col}${PRE_TYPES.has(type) ? `,${col}_pre` : ""}${stampCols}) VALUES($1,$2,$3${PRE_TYPES.has(type) ? ",$3" : ""}${stampVals})
+         ON CONFLICT (pid,hotel_id) DO UPDATE SET ${col}=hotel_events.${col}+$3${pre}${stampSet}`,
     [pid, hotelId, n]
   );
 }
@@ -1148,7 +1210,9 @@ export async function hotelEventRows() {
                    seen: e.seen || 0, clicks: e.click || 0, vote, vote_source, list_ms: e.listMs || 0, detail_ms: e.detailMs || 0,
                    review_ms: e.reviewMs || 0, hover_ms: e.hoverMs || 0, review_seen: e.reviewSeen || 0, review_total: e.reviewTotal || 0,
                    ai_vis_ms: e.ai_vis_ms || 0, ai_hov_ms: e.ai_hov_ms || 0, desc_vis_ms: e.desc_vis_ms || 0, desc_hov_ms: e.desc_hov_ms || 0,
-                   rating_vis_ms: e.rating_vis_ms || 0, rating_hov_ms: e.rating_hov_ms || 0, price_vis_ms: e.price_vis_ms || 0, price_hov_ms: e.price_hov_ms || 0, reviews_hov_ms: e.reviews_hov_ms || 0 });
+                   rating_vis_ms: e.rating_vis_ms || 0, rating_hov_ms: e.rating_hov_ms || 0, price_vis_ms: e.price_vis_ms || 0, price_hov_ms: e.price_hov_ms || 0, reviews_hov_ms: e.reviews_hov_ms || 0,
+                   seen_pre: e.seen_pre || 0, list_ms_pre: e.list_ms_pre || 0, hover_ms_pre: e.hover_ms_pre || 0, ai_vis_ms_pre: e.ai_vis_ms_pre || 0, ai_hov_ms_pre: e.ai_hov_ms_pre || 0, desc_vis_ms_pre: e.desc_vis_ms_pre || 0, desc_hov_ms_pre: e.desc_hov_ms_pre || 0, rating_vis_ms_pre: e.rating_vis_ms_pre || 0, rating_hov_ms_pre: e.rating_hov_ms_pre || 0, price_vis_ms_pre: e.price_vis_ms_pre || 0, price_hov_ms_pre: e.price_hov_ms_pre || 0,
+                   first_seen_at: e.firstSeenAt || "", first_click_at: e.firstClickAt || "", last_event_at: e.lastEventAt || "" });
       }
     }
     // votes on hotels with no view record (e.g. voted from a state we did not observe)
@@ -1157,7 +1221,7 @@ export async function hotelEventRows() {
         if (out.some(r => r.pid === pid && r.hotel_id === hid)) continue;
         const h = hotelOf(hid);
         out.push({ pid, hotel_id: hid, hotel_name: h.name || hid, city: h.city || "", rating: h.rating ?? "", review_count: h.reviewCount ?? "",
-                   seen: 0, clicks: 0, vote: choice, vote_source: (v.sources || {})[pid] || "", list_ms: 0, detail_ms: 0, review_ms: 0, hover_ms: 0, review_seen: 0, review_total: 0, ai_vis_ms: 0, ai_hov_ms: 0, desc_vis_ms: 0, desc_hov_ms: 0, rating_vis_ms: 0, rating_hov_ms: 0, price_vis_ms: 0, price_hov_ms: 0, reviews_hov_ms: 0 });
+                   seen: 0, clicks: 0, vote: choice, vote_source: (v.sources || {})[pid] || "", list_ms: 0, detail_ms: 0, review_ms: 0, hover_ms: 0, review_seen: 0, review_total: 0, ai_vis_ms: 0, ai_hov_ms: 0, desc_vis_ms: 0, desc_hov_ms: 0, rating_vis_ms: 0, rating_hov_ms: 0, price_vis_ms: 0, price_hov_ms: 0, reviews_hov_ms: 0, seen_pre: 0, list_ms_pre: 0, hover_ms_pre: 0, ai_vis_ms_pre: 0, ai_hov_ms_pre: 0, desc_vis_ms_pre: 0, desc_hov_ms_pre: 0, rating_vis_ms_pre: 0, rating_hov_ms_pre: 0, price_vis_ms_pre: 0, price_hov_ms_pre: 0, first_seen_at: "", first_click_at: "", last_event_at: "" });
       }
     }
   } else {
@@ -1167,7 +1231,9 @@ export async function hotelEventRows() {
              COALESCE(e.list_ms,0) AS list_ms, COALESCE(e.detail_ms,0) AS detail_ms,
              COALESCE(e.review_ms,0) AS review_ms, COALESCE(e.hover_ms,0) AS hover_ms, COALESCE(e.review_seen,0) AS review_seen, COALESCE(e.review_total,0) AS review_total,
              COALESCE(e.ai_vis_ms,0) AS ai_vis_ms, COALESCE(e.ai_hov_ms,0) AS ai_hov_ms, COALESCE(e.desc_vis_ms,0) AS desc_vis_ms, COALESCE(e.desc_hov_ms,0) AS desc_hov_ms,
-             COALESCE(e.rating_vis_ms,0) AS rating_vis_ms, COALESCE(e.rating_hov_ms,0) AS rating_hov_ms, COALESCE(e.price_vis_ms,0) AS price_vis_ms, COALESCE(e.price_hov_ms,0) AS price_hov_ms, COALESCE(e.reviews_hov_ms,0) AS reviews_hov_ms
+             COALESCE(e.rating_vis_ms,0) AS rating_vis_ms, COALESCE(e.rating_hov_ms,0) AS rating_hov_ms, COALESCE(e.price_vis_ms,0) AS price_vis_ms, COALESCE(e.price_hov_ms,0) AS price_hov_ms, COALESCE(e.reviews_hov_ms,0) AS reviews_hov_ms,
+             e.first_seen_at, e.first_click_at, e.last_event_at,
+             COALESCE(e.seen_pre,0) AS seen_pre, COALESCE(e.list_ms_pre,0) AS list_ms_pre, COALESCE(e.hover_ms_pre,0) AS hover_ms_pre, COALESCE(e.ai_vis_ms_pre,0) AS ai_vis_ms_pre, COALESCE(e.ai_hov_ms_pre,0) AS ai_hov_ms_pre, COALESCE(e.desc_vis_ms_pre,0) AS desc_vis_ms_pre, COALESCE(e.desc_hov_ms_pre,0) AS desc_hov_ms_pre, COALESCE(e.rating_vis_ms_pre,0) AS rating_vis_ms_pre, COALESCE(e.rating_hov_ms_pre,0) AS rating_hov_ms_pre, COALESCE(e.price_vis_ms_pre,0) AS price_vis_ms_pre, COALESCE(e.price_hov_ms_pre,0) AS price_hov_ms_pre
       FROM (SELECT pid, hotel_id FROM hotel_events UNION SELECT voter_id, hotel_id FROM votes) k
       LEFT JOIN hotel_events e ON e.pid=k.pid AND e.hotel_id=k.hotel_id
       LEFT JOIN votes v ON v.voter_id=k.pid AND v.hotel_id=k.hotel_id
@@ -1175,7 +1241,9 @@ export async function hotelEventRows() {
       ORDER BY k.pid, k.hotel_id`);
     for (const r of rows) out.push({ ...r, rating: r.rating ?? "", review_count: r.review_count ?? "", list_ms: Number(r.list_ms), detail_ms: Number(r.detail_ms), review_ms: Number(r.review_ms), hover_ms: Number(r.hover_ms),
                 ai_vis_ms: Number(r.ai_vis_ms), ai_hov_ms: Number(r.ai_hov_ms), desc_vis_ms: Number(r.desc_vis_ms), desc_hov_ms: Number(r.desc_hov_ms),
-                rating_vis_ms: Number(r.rating_vis_ms), rating_hov_ms: Number(r.rating_hov_ms), price_vis_ms: Number(r.price_vis_ms), price_hov_ms: Number(r.price_hov_ms), reviews_hov_ms: Number(r.reviews_hov_ms) });
+                rating_vis_ms: Number(r.rating_vis_ms), rating_hov_ms: Number(r.rating_hov_ms), price_vis_ms: Number(r.price_vis_ms), price_hov_ms: Number(r.price_hov_ms), reviews_hov_ms: Number(r.reviews_hov_ms),
+                first_seen_at: r.first_seen_at ? new Date(r.first_seen_at).toISOString() : "", first_click_at: r.first_click_at ? new Date(r.first_click_at).toISOString() : "", last_event_at: r.last_event_at ? new Date(r.last_event_at).toISOString() : "",
+                seen_pre: Number(r.seen_pre), list_ms_pre: Number(r.list_ms_pre), hover_ms_pre: Number(r.hover_ms_pre), ai_vis_ms_pre: Number(r.ai_vis_ms_pre), ai_hov_ms_pre: Number(r.ai_hov_ms_pre), desc_vis_ms_pre: Number(r.desc_vis_ms_pre), desc_hov_ms_pre: Number(r.desc_hov_ms_pre), rating_vis_ms_pre: Number(r.rating_vis_ms_pre), rating_hov_ms_pre: Number(r.rating_hov_ms_pre), price_vis_ms_pre: Number(r.price_vis_ms_pre), price_hov_ms_pre: Number(r.price_hov_ms_pre) });
   }
   // attach the participant's condition to every row (handy for analysis in one file)
   const cond = {};
@@ -1261,6 +1329,7 @@ export async function participantSummaries() {
         consentedAt: p.consentedAt ? new Date(p.consentedAt).toISOString() : null,
         exitedAt: p.exitedAt ? new Date(p.exitedAt).toISOString() : null,
         booked: p.booked || "",
+        tutorialDoneAt: p.tutorialDoneAt || null,
         condition: p.condition || "",
         aiSearch: p.aiSearch ?? null, aiProduct: p.aiProduct ?? null,
         likes: (votesByPid[pid] || {}).up || 0,
@@ -1279,7 +1348,7 @@ export async function participantSummaries() {
       };
     }).sort((a, b) => b.totalMs - a.totalMs);
   }
-  const parts = await pool.query("SELECT pid,total_ms,site_fav,first_seen,last_seen,consented_at,exited_at,booked_hotel,condition,ai_search,ai_product FROM participants");
+  const parts = await pool.query("SELECT pid,total_ms,site_fav,first_seen,last_seen,consented_at,exited_at,booked_hotel,tutorial_done_at,condition,ai_search,ai_product FROM participants");
   const favs = await pool.query(`SELECT f.pid, f.hotel_id, h.name FROM saves f LEFT JOIN hotels h ON h.id=f.hotel_id`);
   const events = await pool.query(`SELECT e.pid, e.hotel_id, h.name, h.rating, h.review_count, e.seen, e.clicks, e.list_ms, e.detail_ms, e.review_ms, e.review_seen, e.review_total, v.choice, v.source
                                      FROM hotel_events e LEFT JOIN hotels h ON h.id=e.hotel_id
@@ -1294,7 +1363,7 @@ export async function participantSummaries() {
   for (const p of parts.rows) {
     const o = ensure(p.pid);
     o.totalMs = Number(p.total_ms) || 0; o.siteFav = Boolean(p.site_fav);
-    o.firstSeen = p.first_seen; o.lastSeen = p.last_seen; o.consentedAt = p.consented_at; o.exitedAt = p.exited_at || null; o.booked = p.booked_hotel || ""; o.condition = p.condition || ""; o.aiSearch = p.ai_search; o.aiProduct = p.ai_product;
+    o.firstSeen = p.first_seen; o.lastSeen = p.last_seen; o.consentedAt = p.consented_at; o.exitedAt = p.exited_at || null; o.booked = p.booked_hotel || ""; o.tutorialDoneAt = p.tutorial_done_at || null; o.condition = p.condition || ""; o.aiSearch = p.ai_search; o.aiProduct = p.ai_product;
   }
   for (const f of favs.rows) ensure(f.pid).favHotels.push({ id: f.hotel_id, name: f.name || f.hotel_id });
   for (const e of events.rows) ensure(e.pid).hotels.push({ id: e.hotel_id, name: e.name || e.hotel_id, rating: e.rating ?? null, reviewCount: e.review_count ?? null, seen: e.seen || 0, clicks: e.clicks || 0, listMs: Number(e.list_ms) || 0, detailMs: Number(e.detail_ms) || 0, reviewMs: Number(e.review_ms) || 0, reviewSeen: e.review_seen || 0, reviewTotal: e.review_total || 0, vote: e.choice || "", voteSource: e.source || "" });
