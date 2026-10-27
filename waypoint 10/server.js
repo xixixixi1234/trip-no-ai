@@ -174,6 +174,13 @@ app.post("/api/list-visit", async (req, res) => {
   catch (e) { console.error(e); res.status(500).json({ error: "failed" }); }
 });
 
+/* participant finished (or skipped) the tutorial */
+app.post("/api/tutorial-done", async (req, res) => {
+  try { const { pid } = req.body || {}; if (!pid) return res.status(400).json({ error: "pid required" });
+    res.json(await db.setTutorialDone(String(pid).slice(0, 64))); }
+  catch (e) { console.error(e); res.status(500).json({ error: "failed" }); }
+});
+
 /* exit review screen: the hotels this participant opened, with current save state */
 app.get("/api/my-hotels", async (req, res) => {
   try {
@@ -245,6 +252,7 @@ app.get("/api/config", async (_req, res) => {
                goodbye: await db.getSetting("goodbye", ""),
                returnUrl: await db.getSetting("return_url", ""),
                saveSize: await db.getSetting("save_size", "lg"),
+               aiStyle: JSON.parse(await db.getSetting("ai_style", "null") || "null") || {},
                tutorialSteps: await getTutorialSteps(),
                tutorialSkip: (await db.getSetting("tutorial_skip", "on")) !== "off",
                exitTexts: JSON.parse(await db.getSetting("exit_texts", "null") || "null") || {},
@@ -264,7 +272,7 @@ app.post("/api/track/consent", async (req, res) => {
 });
 app.get("/api/admin/settings", requireAdmin, async (_req, res) => {
   try {
-    res.json({ ai: await db.getAiSwitches(), welcome: await db.getSetting("welcome", ""), welcomeDefault: await defaultWelcome(), goodbye: await db.getSetting("goodbye", ""), returnUrl: await db.getSetting("return_url", ""), saveSize: await db.getSetting("save_size", "lg"), tutorialSteps: await getTutorialSteps(), tutorialSkip: await db.getSetting("tutorial_skip", "on"), exitTexts: JSON.parse(await db.getSetting("exit_texts", "null") || "null") || {},
+    res.json({ ai: await db.getAiSwitches(), welcome: await db.getSetting("welcome", ""), welcomeDefault: await defaultWelcome(), goodbye: await db.getSetting("goodbye", ""), returnUrl: await db.getSetting("return_url", ""), saveSize: await db.getSetting("save_size", "lg"), aiStyle: JSON.parse(await db.getSetting("ai_style", "null") || "null") || {}, tutorialSteps: await getTutorialSteps(), tutorialSkip: await db.getSetting("tutorial_skip", "on"), exitTexts: JSON.parse(await db.getSetting("exit_texts", "null") || "null") || {},
                elements: await db.getElements(), elementList: db.ELEMENTS.map(([key, label, def]) => ({ key, label, def })),
                reviewsUi: { total: await db.getSetting("reviews_total", "0"), first: await db.getSetting("reviews_first", "20"), nav: await db.getSetting("reviews_nav", "scroll") },
                listUi: { first: await db.getSetting("list_first", "20"), nav: await db.getSetting("list_nav", "pages") },
@@ -273,7 +281,7 @@ app.get("/api/admin/settings", requireAdmin, async (_req, res) => {
 });
 app.post("/api/admin/settings", requireAdmin, async (req, res) => {
   const { key, value } = req.body || {};
-  if (!key || !["welcome", "goodbye", "return_url", "save_size", "tutorial_steps", "tutorial_skip", "exit_texts", "ai_search", "ai_product", "elements", "layout", "reviews_total", "reviews_first", "reviews_nav", "list_first", "list_nav"].includes(key)) return res.status(400).json({ error: "unknown setting" });
+  if (!key || !["welcome", "goodbye", "return_url", "save_size", "ai_style", "tutorial_steps", "tutorial_skip", "exit_texts", "ai_search", "ai_product", "elements", "layout", "reviews_total", "reviews_first", "reviews_nav", "list_first", "list_nav"].includes(key)) return res.status(400).json({ error: "unknown setting" });
   if (key === "elements") { try { const o = JSON.parse(String(value)); if (!o || typeof o !== "object") throw 0; } catch { return res.status(400).json({ error: "elements must be a JSON object" }); } }
   if (key === "ai_search" || key === "ai_product") {
     const sw = await db.getAiSwitches();
@@ -303,7 +311,11 @@ app.post("/api/track/event", async (req, res) => {
   if (!pid || !hotelId || !EVENT_TYPES.includes(type)) {
     return res.status(400).json({ error: "pid, hotelId, type required" });
   }
-  try { await db.trackHotelEvent(pid, hotelId, type, n == null ? 1 : n); res.json({ ok: true }); }
+  try {
+    await db.trackHotelEvent(pid, hotelId, type, n == null ? 1 : n);
+    if (type === "click") await db.logInteractions(pid, [{ hotelId, type: "click", ms: 0, at: Date.now() }]);
+    res.json({ ok: true });
+  }
   catch (e) { console.error(e); res.status(500).json({ error: "track failed" }); }
 });
 
@@ -312,13 +324,14 @@ app.post("/api/track/event", async (req, res) => {
 app.post("/api/track/batch", express.text({ type: "*/*", limit: "200kb" }), async (req, res) => {
   let body = req.body;
   if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = null; } }
-  const { pid, items } = body || {};
+  const { pid, items, events } = body || {};
   if (!pid || !Array.isArray(items)) return res.status(400).json({ error: "pid and items[] required" });
   try {
     await db.touchParticipant(pid);
     for (const it of items.slice(0, 500)) {
       if (it && it.hotelId && EVENT_TYPES.includes(it.type)) await db.trackHotelEvent(pid, it.hotelId, it.type, it.n == null ? 1 : it.n);
     }
+    if (Array.isArray(events) && events.length) await db.logInteractions(pid, events);
     res.json({ ok: true, n: items.length });
   } catch (e) { console.error(e); res.status(500).json({ error: "track failed" }); }
 });
@@ -481,8 +494,10 @@ app.get("/api/admin/export/votes.csv", requireAdmin, async (req, res) => {
     const allow = await allowedPids(req);
     const rows = (await db.recentVotes(1000000)).filter(v => !allow || allow.has(v.voter_id));
     const csv = toCsv(
-      ["participant_id", "hotel_id", "hotel_name", "action", "result", "page", "had_opened_product_page", "nth_search_page_visit", "nth_product_page_visit", "time"],
-      rows.map(v => [v.voter_id, v.hotel_id, v.hotel_name || "", v.choice === "up" ? "like" : "dislike", v.result || "set", v.source || "", v.after_detail == null ? "" : (v.after_detail ? "yes" : "no"), v.list_visit_no ?? "", v.product_visit_no ?? "", v.updated_at || ""])
+      ["participant_id", "hotel_id", "hotel_name", "action", "result", "page", "had_opened_product_page", "nth_search_page_visit", "nth_product_page_visit",
+       "ai_summary_visible_seconds_before_this_action", "ai_summary_hover_seconds_before_this_action", "time"],
+      rows.map(v => [v.voter_id, v.hotel_id, v.hotel_name || "", v.choice === "up" ? "like" : "dislike", v.result || "set", v.source || "", v.after_detail == null ? "" : (v.after_detail ? "yes" : "no"), v.list_visit_no ?? "", v.product_visit_no ?? "",
+        v.ai_vis_ms_at == null ? "" : (Number(v.ai_vis_ms_at) / 1000).toFixed(1), v.ai_hov_ms_at == null ? "" : (Number(v.ai_hov_ms_at) / 1000).toFixed(1), v.updated_at || ""])
     );
     sendCsv(res, "votes.csv", csv);
   } catch (e) { console.error(e); res.status(500).json({ error: "export failed" }); }
@@ -525,13 +540,14 @@ app.get("/api/admin/export/participants.csv", requireAdmin, async (req, res) => 
       p.aiSearch == null ? "" : (p.aiSearch ? "yes" : "no"),
       p.aiProduct == null ? "" : (p.aiProduct ? "yes" : "no"),
       p.consentedAt || "",
+      p.tutorialDoneAt || "",
       p.firstSeen || "",
       p.lastSeen || "",
     ]);
     const csv = toCsv(
       ["participant_id", "hotels_liked", "hotels_disliked", "likes_on_search_page", "likes_on_product_page", "dislikes_on_search_page", "dislikes_on_product_page", "hotels_saved",
        "saves_before_product_page", "likes_before_product_page", "dislikes_before_product_page",
-       "hotels_viewed", "hotels_clicked", "avg_seconds_per_hotel", "total_seconds_on_site", "total_ms_on_site", "finished_at", "seconds_consent_to_finish", "booked_hotel_id", "booked_hotel_name", "bookmarked_site", "consented", "ai_summary_in_search_page", "ai_summary_in_product_page", "consent_time", "first_seen", "last_seen"],
+       "hotels_viewed", "hotels_clicked", "avg_seconds_per_hotel", "total_seconds_on_site", "total_ms_on_site", "finished_at", "seconds_consent_to_finish", "booked_hotel_id", "booked_hotel_name", "bookmarked_site", "consented", "ai_summary_in_search_page", "ai_summary_in_product_page", "consent_time", "tutorial_completed_at", "first_seen", "last_seen"],
       rows
     );
     sendCsv(res, "participants.csv", csv);
@@ -556,13 +572,21 @@ app.get("/api/admin/export/hotel_events.csv", requireAdmin, async (req, res) => 
       ((r.hover_ms || 0) / 1000).toFixed(1), r.hover_ms || 0,
       ((r.ai_vis_ms||0)/1000).toFixed(1), ((r.ai_hov_ms||0)/1000).toFixed(1), ((r.desc_vis_ms||0)/1000).toFixed(1), ((r.desc_hov_ms||0)/1000).toFixed(1),
       ((r.rating_vis_ms||0)/1000).toFixed(1), ((r.rating_hov_ms||0)/1000).toFixed(1), ((r.price_vis_ms||0)/1000).toFixed(1), ((r.price_hov_ms||0)/1000).toFixed(1), ((r.reviews_hov_ms||0)/1000).toFixed(1),
+      r.first_seen_at || "", r.first_click_at || "", r.last_event_at || "",
+      r.seen_pre || 0, ((r.list_ms_pre||0)/1000).toFixed(1), ((r.hover_ms_pre||0)/1000).toFixed(1),
+      ((r.ai_vis_ms_pre||0)/1000).toFixed(1), ((r.ai_hov_ms_pre||0)/1000).toFixed(1), ((r.desc_vis_ms_pre||0)/1000).toFixed(1), ((r.desc_hov_ms_pre||0)/1000).toFixed(1),
+      ((r.rating_vis_ms_pre||0)/1000).toFixed(1), ((r.rating_hov_ms_pre||0)/1000).toFixed(1), ((r.price_vis_ms_pre||0)/1000).toFixed(1), ((r.price_hov_ms_pre||0)/1000).toFixed(1),
       r.ai_search == null ? "" : (r.ai_search ? "yes" : "no"), r.ai_product == null ? "" : (r.ai_product ? "yes" : "no"),
     ]);
     const csv = toCsv(
       ["participant_id", "hotel_id", "hotel_name", "city", "hotel_rating", "hotel_review_count",
        "list_views", "clicks", "vote", "vote_page", "list_dwell_seconds", "detail_dwell_seconds", "total_dwell_seconds", "list_dwell_ms", "detail_dwell_ms", "total_dwell_ms", "saved", "saved_on_page", "reviews_dwell_seconds", "reviews_dwell_ms", "reviews_scrolled_to", "reviews_shown_total", "card_hover_seconds", "card_hover_ms",
       "ai_summary_visible_seconds", "ai_summary_hover_seconds", "description_visible_seconds", "description_hover_seconds",
-      "rating_visible_seconds", "rating_hover_seconds", "price_visible_seconds", "price_hover_seconds", "reviews_hover_seconds", "ai_summary_in_search_page", "ai_summary_in_product_page"],
+      "rating_visible_seconds", "rating_hover_seconds", "price_visible_seconds", "price_hover_seconds", "reviews_hover_seconds",
+      "first_seen_at", "first_clicked_at", "last_activity_at",
+      "list_views_before_product_page", "list_dwell_before_product_page_seconds", "card_hover_before_product_page_seconds",
+      "ai_summary_visible_before_product_page_seconds", "ai_summary_hover_before_product_page_seconds", "description_visible_before_product_page_seconds", "description_hover_before_product_page_seconds",
+      "rating_visible_before_product_page_seconds", "rating_hover_before_product_page_seconds", "price_visible_before_product_page_seconds", "price_hover_before_product_page_seconds", "ai_summary_in_search_page", "ai_summary_in_product_page"],
       rows
     );
     sendCsv(res, "hotel_events.csv", csv);
@@ -733,8 +757,10 @@ app.get("/api/admin/export/saves.csv", requireAdmin, async (req, res) => {
       const still = (state[e.pid] || {})[e.hotelId] !== undefined;
       const page = e.source === "detail" ? "product_page" : e.source === "exit" ? "exit_review" : "search_page";
       const ad = (e.afterDetail ?? e.after_detail);
-      return [e.pid, e.hotelId, h.name || "", h.cityName || h.city || "", e.action, page, ad == null ? "" : (ad ? "yes" : "no"), e.listNo ?? "", e.productNo ?? "", still ? "yes" : "no", e.created]; });
-    sendCsv(res, "saves.csv", toCsv(["participant_id", "hotel_id", "hotel_name", "city", "action", "page", "had_opened_product_page", "nth_search_page_visit", "nth_product_page_visit", "still_saved", "at"], rows));
+      return [e.pid, e.hotelId, h.name || "", h.cityName || h.city || "", h.rating ?? "", e.action, page, ad == null ? "" : (ad ? "yes" : "no"), e.listNo ?? "", e.productNo ?? "",
+              e.aiVis == null ? "" : (e.aiVis / 1000).toFixed(1), e.aiHov == null ? "" : (e.aiHov / 1000).toFixed(1), still ? "yes" : "no", e.created]; });
+    sendCsv(res, "saves.csv", toCsv(["participant_id", "hotel_id", "hotel_name", "city", "hotel_rating", "action", "page", "had_opened_product_page", "nth_search_page_visit", "nth_product_page_visit",
+      "ai_summary_visible_seconds_before_this_action", "ai_summary_hover_seconds_before_this_action", "still_saved", "at"], rows));
   } catch (e) { console.error(e); res.status(500).json({ error: "export failed" }); }
 });
 
@@ -749,6 +775,20 @@ app.get("/api/admin/export/review_votes.csv", requireAdmin, async (req, res) => 
               r.author || "", r.rating ?? "", r.title || "", v.updated];
     });
     sendCsv(res, "review_votes.csv", toCsv(["participant_id", "review_id", "vote", "hotel_id", "hotel_name", "city", "review_author", "review_rating", "review_title", "voted_at"], rows));
+  } catch (e) { console.error(e); res.status(500).json({ error: "export failed" }); }
+});
+
+/* timestamped interaction log: one row per detail-page click / hover segment */
+app.get("/api/admin/export/interactions.csv", requireAdmin, async (req, res) => {
+  try {
+    const allow = await allowedPids(req);
+    const hotelName = Object.fromEntries((await db.listHotels({})).map(h => [h.id, h.name]));
+    const rows = (await db.allInteractions()).filter(r => !allow || allow.has(r.pid)).map(r => [
+      r.pid, r.hotel_id, hotelName[r.hotel_id] || "", r.event,
+      r.event === "click" ? "" : (r.ms / 1000).toFixed(1),
+      r.client_at || "", r.at || ""]);
+    sendCsv(res, "interactions.csv", toCsv(
+      ["participant_id", "hotel_id", "hotel_name", "event", "duration_seconds", "started_at_client", "received_at_server"], rows));
   } catch (e) { console.error(e); res.status(500).json({ error: "export failed" }); }
 });
 
@@ -986,6 +1026,7 @@ const ADMIN_HTML = `<!doctype html>
       <a class="dl" href="/api/admin/export/votes.csv">Export raw votes CSV</a>
       <a class="dl" href="/api/admin/export/review_votes.csv">Export review likes CSV</a>
       <a class="dl" href="/api/admin/export/saves.csv">Export saves CSV</a>
+      <a class="dl" href="/api/admin/export/interactions.csv">Export interaction timeline CSV</a>
       <a class="dl" href="/api/admin/export/hotel_content.csv">Export hotel content + text stats CSV</a>
       <a class="dl" href="/api/admin/export/reviews.csv">Export all reviews CSV</a>
       <a class="dl" href="/api/admin/export/summary_stats.csv">Export summary statistics CSV</a>
@@ -1140,6 +1181,30 @@ You can now close this window and return to the questionnaire."></textarea>
         </select></label>
       </div>
       <div style="display:flex;gap:10px;align-items:center;margin-top:10px"><button class="btn" id="listUiSave">Save now</button><span class="muted" id="listUiMsg"></span></div>
+    </div>
+
+    <h2>AI summary appearance</h2>
+    <div class="panel" id="aiStylePanel">
+      <div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-end">
+        <label style="font-size:13px">"AI summary" label size
+          <select id="aisBadge" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
+            <option value="sm">Small</option><option value="lg" selected>Large (default)</option>
+          </select></label>
+        <label style="font-size:13px">Summary text weight
+          <select id="aisBold" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
+            <option value="off">Normal</option><option value="on" selected>Bold (default)</option>
+          </select></label>
+        <label style="font-size:13px">Summary text size
+          <select id="aisSize" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
+            <option value="sm" selected>Small (default)</option><option value="md">Medium</option><option value="lg">Large</option>
+          </select></label>
+        <label style="font-size:13px">Highlight box around the summary
+          <select id="aisBox" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
+            <option value="off" selected>Off (default)</option><option value="on">On (tinted box, orange border)</option>
+          </select></label>
+        <button class="btn" id="aiStyleSave">Save now</button><span class="muted" id="aiStyleMsg"></span>
+      </div>
+      <p class="sub" style="margin:10px 0 0">Applies to the AI summary on search-page cards and the product page. Like the AI switches, do not change mid-wave.</p>
     </div>
 
     <h2>Save / Dislike button size</h2>
@@ -1603,6 +1668,7 @@ You can now close this window and return to the questionnaire."></textarea>
     document.getElementById('welcomeText').value = d.welcome || d.welcomeDefault || '';
     elemDefs = d.elementList || []; renderElems(d.elements || {});
     document.getElementById('saveSize').value = d.saveSize || 'lg';
+    const ais = d.aiStyle || {}; aisBadge.value = ais.badge || 'lg'; aisBold.value = ais.bold || 'on'; aisSize.value = ais.size || 'sm'; aisBox.value = ais.box || 'off';
     const lu = d.listUi || {}; document.getElementById('listFirst').value = lu.first ?? '20'; document.getElementById('listNav').value = (lu.nav === 'scroll') ? 'scroll' : 'pages';
     document.getElementById('goodbyeText').value = d.goodbye || ''; document.getElementById('returnUrl').value = d.returnUrl || '';
     const ex=d.exitTexts||{}; ex1T.value=ex.s1Title||''; ex1X.value=ex.s1Text||''; ex2T.value=ex.s2Title||''; ex2X.value=ex.s2Text||'';
@@ -1737,6 +1803,13 @@ You can now close this window and return to the questionnaire."></textarea>
   autosave(document.getElementById('goodbyeText'), saveGoodbye, document.getElementById('goodbyeMsg'));
   document.getElementById('goodbyeSave').onclick=async()=>{ const m=document.getElementById('goodbyeMsg'); try{ m.textContent='Saving…'; await saveGoodbye(); m.style.color='#2E7D5B'; m.textContent='Saved'; }catch(e){ m.style.color='#B3261E'; m.textContent=e.message; } };
 
+  async function saveAiStyle(){
+    const v={badge:aisBadge.value,bold:aisBold.value,size:aisSize.value,box:aisBox.value};
+    const r=await fetch('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'ai_style',value:JSON.stringify(v)})});
+    const d=await r.json(); if(!r.ok) throw new Error(d.error||'Save failed');
+  }
+  autosave(document.getElementById('aiStylePanel'), saveAiStyle, document.getElementById('aiStyleMsg'));
+  document.getElementById('aiStyleSave').onclick=async()=>{ const m=document.getElementById('aiStyleMsg'); try{ m.textContent='Saving…'; await saveAiStyle(); m.style.color='#2E7D5B'; m.textContent='Saved'; }catch(e){ m.style.color='#B3261E'; m.textContent=e.message; } };
   async function saveSaveSize(){
     const r=await fetch('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'save_size',value:document.getElementById('saveSize').value})});
     const d=await r.json(); if(!r.ok) throw new Error(d.error||'Save failed');
