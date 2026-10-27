@@ -457,14 +457,19 @@ async function allowedPids(req) {
   }
   return set;
 }
-function sendCsv(res, filename, csv) {
+async function sendCsv(res, filename, csv) {
+  let aiTag = "";
+  try {   // tag every export with this site's search-page AI condition so A/B files never get mixed up
+    const a = await db.getAiSwitches();
+    aiTag = a.search ? "_ai_summary_search" : "_no_ai_summary_search";
+  } catch {}
   const q = (res.req && res.req.query) || {};
   let stamp = typeof q.t === "string" && /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}$/.test(q.t) ? q.t : null;   // the admin page passes the downloader's local time
   if (!stamp) { const d = new Date(), p2 = n => String(n).padStart(2, "0");
     stamp = `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}_${p2(d.getUTCHours())}-${p2(d.getUTCMinutes())}`; }
   const r = exportRange(res.req);
   const rangeTag = r ? `_${r.fromStr || "start"}~${r.toStr || "now"}` : "";
-  const name = filename.replace(/\.csv$/i, "") + rangeTag + "_" + stamp + ".csv";
+  const name = filename.replace(/\.csv$/i, "") + aiTag + rangeTag + "_" + stamp + ".csv";
   res.set("Content-Type", "text/csv; charset=utf-8");
   res.set("Content-Disposition", `attachment; filename="${name}"`);
   res.send(csv);
@@ -490,11 +495,24 @@ app.get("/api/admin/export/participants.csv", requireAdmin, async (req, res) => 
     const savesState = await db.allSavesState();
     const hotelName = Object.fromEntries((await db.listHotels({})).map(h => [h.id, h.name]));
     const ps = (await db.participantSummaries()).filter(p => !allow || allow.has(p.pid));
+    /* decisions made BEFORE ever opening that hotel's product page (after_detail=false):
+       distinct hotels per participant whose save / like / dislike was clicked pre-detail */
+    const preSave = {}, preLike = {}, preDislike = {};
+    for (const e of await db.allSaveEvents()) {
+      const ad = (e.afterDetail ?? e.after_detail);
+      if (e.action === "save" && ad === false) (preSave[e.pid] = preSave[e.pid] || new Set()).add(e.hotelId);
+    }
+    for (const v of await db.recentVotes(1000000)) {
+      if (v.result !== "set" || v.after_detail !== false) continue;
+      const m = v.choice === "up" ? preLike : preDislike;
+      (m[v.voter_id] = m[v.voter_id] || new Set()).add(v.hotel_id);
+    }
     const rows = ps.map(p => [
       p.pid,
       p.likes || 0, p.dislikes || 0,
       p.likesList || 0, p.likesDetail || 0, p.dislikesList || 0, p.dislikesDetail || 0,
       Object.keys(savesState[p.pid] || {}).length,
+      (preSave[p.pid] || new Set()).size, (preLike[p.pid] || new Set()).size, (preDislike[p.pid] || new Set()).size,
       p.hotelsSeen || 0, p.hotelsClicked || 0,
       ((p.avgHotelMs || 0) / 1000).toFixed(1),       // mean seconds per hotel (list + detail)
       Math.round((p.totalMs || 0) / 1000),          // total seconds on site
@@ -512,6 +530,7 @@ app.get("/api/admin/export/participants.csv", requireAdmin, async (req, res) => 
     ]);
     const csv = toCsv(
       ["participant_id", "hotels_liked", "hotels_disliked", "likes_on_search_page", "likes_on_product_page", "dislikes_on_search_page", "dislikes_on_product_page", "hotels_saved",
+       "saves_before_product_page", "likes_before_product_page", "dislikes_before_product_page",
        "hotels_viewed", "hotels_clicked", "avg_seconds_per_hotel", "total_seconds_on_site", "total_ms_on_site", "finished_at", "seconds_consent_to_finish", "booked_hotel_id", "booked_hotel_name", "bookmarked_site", "consented", "ai_summary_in_search_page", "ai_summary_in_product_page", "consent_time", "first_seen", "last_seen"],
       rows
     );
