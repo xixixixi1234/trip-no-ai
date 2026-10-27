@@ -163,7 +163,7 @@ app.get("/api/votes", async (_req, res) => {
 /* next free participant number (P0001, P0002, …). Nothing about the visitor is read or stored —
    the browser remembers its number locally, so a refresh does not consume a new one. */
 app.get("/api/assign-id", async (_req, res) => {
-  try { const n = await db.nextPid(); res.json({ pid: (process.env.PID_PREFIX || "B") + String(n).padStart(4, "0") }); }
+  try { const n = await db.nextPid(); res.json({ pid: (process.env.PID_PREFIX || "A") + String(n).padStart(4, "0") }); }
   catch (e) { console.error(e); res.status(500).json({ error: "failed" }); }
 });
 
