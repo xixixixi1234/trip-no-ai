@@ -244,7 +244,9 @@ function useAiStyle() {
            titleBold: onoff(a.titleBold, true), ratingBold: onoff(a.ratingBold, true), descBold: onoff(a.descBold, false),
            badgeBold: onoff(a.badgeBold, true), priceBold: onoff(a.priceBold, true),
            descMode: a.descMode === "first" ? "first" : "clamp",
-           descLabel: typeof a.descLabel === "string" ? a.descLabel.trim() : "Official description" };
+           descLabel: typeof a.descLabel === "string" ? a.descLabel.trim() : "Official description",
+           descBadgePx: px(a.descBadgePx, px(a.badgePx, 12.5)),   // falls back to the AI label size
+           descBadgeColor: hex(a.descBadgeColor) };
 }
 
 /* ----------------------- atoms ----------------------- */
@@ -310,30 +312,42 @@ function firstSentence(text) {
   return out;
 }
 
-function AiBadge({ color = C.buoy }) {
+function AiBadge({ color = C.buoy, w }) {
   const { badgePx, badgeColor, badgeBold } = useAiStyle();
   if (badgeColor) color = badgeColor;
   return (
     <span className="wp-tip" tabIndex={0} data-tip={AI_TIP} aria-label={`AI summary. ${AI_TIP}`} style={{
       flex: "0 0 auto", fontFamily: "'Roboto Mono', monospace", fontSize: badgePx, fontWeight: badgeBold ? 600 : 400, whiteSpace: "nowrap",
+      ...(w ? { width: w, boxSizing: "border-box", textAlign: "center" } : {}),
       color, border: `1.5px solid ${color}`, borderRadius: 6, padding: `${Math.round(badgePx * 0.32)}px ${Math.round(badgePx * 0.72)}px`, marginTop: 0,
     }}>AI summary</span>
   );
 }
 
 /* label in front of the official description (text set in admin "Description label text"; empty = hidden) */
-function DescBadge() {
-  const { badgePx, badgeBold, descLabel } = useAiStyle();
+function DescBadge({ w }) {
+  const { descBadgePx, badgeBold, descLabel, descBadgeColor } = useAiStyle();
   if (!descLabel) return null;
-  const color = "#5A6B72";
-  const longest = Math.max(...descLabel.split(/\s+/).map(w => w.length), 1);   // wrap at spaces: one word per line
+  const color = descBadgeColor || "#5A6B72";
+  const longest = Math.max(...descLabel.split(/\s+/).map(x => x.length), 1);   // wrap at spaces: one word per line
   return (
     <span style={{
-      flex: "0 0 auto", fontFamily: "'Roboto Mono', monospace", fontSize: badgePx, fontWeight: badgeBold ? 600 : 400,
-      whiteSpace: "normal", wordBreak: "keep-all", overflowWrap: "normal", width: `${longest}ch`, boxSizing: "content-box", textAlign: "center", lineHeight: 1.3,
-      color, border: `1.5px solid ${color}`, borderRadius: 6, padding: `${Math.round(badgePx * 0.32)}px ${Math.round(badgePx * 0.72)}px`, marginTop: 0,
+      flex: "0 0 auto", fontFamily: "'Roboto Mono', monospace", fontSize: descBadgePx, fontWeight: badgeBold ? 600 : 400,
+      whiteSpace: "normal", wordBreak: "keep-all", overflowWrap: "normal", textAlign: "center", lineHeight: 1.3,
+      ...(w ? { width: w, boxSizing: "border-box" } : { width: `${longest}ch`, boxSizing: "content-box" }),
+      color, border: `1.5px solid ${color}`, borderRadius: 6, padding: `${Math.round(descBadgePx * 0.32)}px ${Math.round(descBadgePx * 0.72)}px`, marginTop: 0,
     }}>{descLabel}</span>
   );
+}
+
+/* shared label-column width so the two card badges stay left-aligned whatever their font sizes:
+   the wider of (one-line "AI summary") and (longest word of the description label), Roboto Mono ≈ 0.63em per char */
+function useLabelColW() {
+  const { badgePx, descBadgePx, descLabel } = useAiStyle();
+  const box = (chars, f) => Math.ceil(chars * f * 0.63 + 2 * Math.round(f * 0.72) + 3);
+  const wAi = box("AI summary".length, badgePx);
+  const wDesc = descLabel ? box(Math.max(...descLabel.split(/\s+/).map(x => x.length), 1), descBadgePx) : 0;
+  return Math.max(wAi, wDesc);
 }
 function Tag({ children }) {
   return (
@@ -1529,9 +1543,10 @@ function CityHotelRow({ l, onOpen, votes, showAi = true }) {
   const desc = l.about && l.about.trim() && l.about.trim() !== (l.seo || "").trim() ? l.about.trim() : "";
 
   const aiSt = useAiStyle();
+  const labelColW = useLabelColW();   // keeps the two card badges the same width so the texts align
   let body = null;
   if (showSeo) {
-    body = <><AiBadge /><p className="wp-text" style={{ fontSize: aiSt.aiPx, lineHeight: 1.6, color: aiSt.aiColor || (aiSt.bold ? C.ink : C.inkSoft), fontWeight: aiSt.bold ? 600 : 400, margin: 0 }}>{l.seo}</p></>;
+    body = <><AiBadge w={labelColW} /><p className="wp-text" style={{ fontSize: aiSt.aiPx, lineHeight: 1.6, color: aiSt.aiColor || (aiSt.bold ? C.ink : C.inkSoft), fontWeight: aiSt.bold ? 600 : 400, margin: 0 }}>{l.seo}</p></>;
   } else if (quote.status === "loading") {
     body = <span style={{ fontSize: 12.5, color: C.inkSoft, display: "inline-flex", gap: 8, alignItems: "center" }}><Spinner /> Loading a guest quote…</span>;
   } else if (quote.status === "error") {
@@ -1573,7 +1588,7 @@ function CityHotelRow({ l, onOpen, votes, showAi = true }) {
           {show("list.reviewCount") && <span style={{ fontSize: aiSt.ratingPx - 1, color: C.inkSoft }}>({(l.reviewCount || 0).toLocaleString()})</span>}
         </Zone>
         {layout.list.map(k => {
-          if (k === "description") return desc && show("list.description") ? <Zone key={k} hotelId={l.id} z="desc" style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 10 }}><DescBadge /><p className="wp-text" style={{ fontSize: aiSt.descPx, fontWeight: aiSt.descBold ? 600 : 400, lineHeight: 1.6, color: aiSt.descColor || C.ink, margin: 0, ...(aiSt.descMode === "first" ? {} : { display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }) }}>{aiSt.descMode === "first" ? firstSentence(desc) : desc}</p></Zone> : null;
+          if (k === "description") return desc && show("list.description") ? <Zone key={k} hotelId={l.id} z="desc" style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 10 }}><DescBadge w={labelColW} /><p className="wp-text" style={{ fontSize: aiSt.descPx, fontWeight: aiSt.descBold ? 600 : 400, lineHeight: 1.6, color: aiSt.descColor || C.ink, margin: 0, ...(aiSt.descMode === "first" ? {} : { display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }) }}>{aiSt.descMode === "first" ? firstSentence(desc) : desc}</p></Zone> : null;
           if (k === "ai") return body ? (
             <Zone key={k} hotelId={l.id} z="ai" style={showSeo && aiSt.box
               ? { display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 10, background: "#FDF3ED", border: `1.5px solid ${C.buoy}`, borderRadius: 10, padding: "10px 14px" }
