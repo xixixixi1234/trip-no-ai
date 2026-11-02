@@ -1163,7 +1163,10 @@ export async function trackHotelEvent(pid, hotelId, type, n = 1) {
     return;
   }
   const col = EVENT_COLS[type];
-  const pre = PRE_TYPES.has(type) ? `, ${col}_pre = hotel_events.${col}_pre + CASE WHEN hotel_events.clicks = 0 THEN $3 ELSE 0 END` : "";
+  // the _pre twin gets its own parameter ($4): sharing $3 between an INTEGER column (seen)
+  // and a BIGINT one (seen_pre) makes Postgres refuse to infer the parameter's type
+  const hasPre = PRE_TYPES.has(type);
+  const pre = hasPre ? `, ${col}_pre = hotel_events.${col}_pre + CASE WHEN hotel_events.clicks = 0 THEN $4 ELSE 0 END` : "";
   const stampCols = (type === "seen" ? ",first_seen_at" : type === "click" ? ",first_click_at" : "") + ",last_event_at";
   const stampVals = (type === "seen" || type === "click" ? ",now()" : "") + ",now()";
   const stampSet = ", last_event_at=now()"
@@ -1172,10 +1175,10 @@ export async function trackHotelEvent(pid, hotelId, type, n = 1) {
   await pool.query(
     EVENT_SET_MAX.has(type)
       ? `INSERT INTO hotel_events(pid,hotel_id,${col}${stampCols}) VALUES($1,$2,$3${stampVals})
-         ON CONFLICT (pid,hotel_id) DO UPDATE SET ${col}=GREATEST(hotel_events.${col},$3)${pre}${stampSet}`
-      : `INSERT INTO hotel_events(pid,hotel_id,${col}${PRE_TYPES.has(type) ? `,${col}_pre` : ""}${stampCols}) VALUES($1,$2,$3${PRE_TYPES.has(type) ? ",$3" : ""}${stampVals})
+         ON CONFLICT (pid,hotel_id) DO UPDATE SET ${col}=GREATEST(hotel_events.${col},$3)${stampSet}`
+      : `INSERT INTO hotel_events(pid,hotel_id,${col}${hasPre ? `,${col}_pre` : ""}${stampCols}) VALUES($1,$2,$3${hasPre ? ",$4" : ""}${stampVals})
          ON CONFLICT (pid,hotel_id) DO UPDATE SET ${col}=hotel_events.${col}+$3${pre}${stampSet}`,
-    [pid, hotelId, n]
+    hasPre ? [pid, hotelId, n, n] : [pid, hotelId, n]
   );
 }
 

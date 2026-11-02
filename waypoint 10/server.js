@@ -778,6 +778,32 @@ app.get("/api/admin/export/review_votes.csv", requireAdmin, async (req, res) => 
   } catch (e) { console.error(e); res.status(500).json({ error: "export failed" }); }
 });
 
+/* attention BEFORE the first click on each hotel — one row per participant × hotel */
+app.get("/api/admin/export/hover_before_click.csv", requireAdmin, async (req, res) => {
+  try {
+    const allow = await allowedPids(req);
+    const rows = (await db.hotelEventRows()).filter(r => !allow || allow.has(r.pid)).map(r => [
+      r.pid, r.hotel_id, r.hotel_name, r.city, r.rating,
+      r.clicks > 0 ? "yes" : "no", r.first_clicked_at || r.first_click_at || "",
+      r.seen_pre || 0,
+      ((r.list_ms_pre || 0) / 1000).toFixed(1),
+      ((r.hover_ms_pre || 0) / 1000).toFixed(1),
+      ((r.ai_vis_ms_pre || 0) / 1000).toFixed(1), ((r.ai_hov_ms_pre || 0) / 1000).toFixed(1),
+      ((r.desc_vis_ms_pre || 0) / 1000).toFixed(1), ((r.desc_hov_ms_pre || 0) / 1000).toFixed(1),
+      ((r.rating_vis_ms_pre || 0) / 1000).toFixed(1), ((r.rating_hov_ms_pre || 0) / 1000).toFixed(1),
+      ((r.price_vis_ms_pre || 0) / 1000).toFixed(1), ((r.price_hov_ms_pre || 0) / 1000).toFixed(1),
+    ]);
+    sendCsv(res, "hover_before_click.csv", toCsv(
+      ["participant_id", "hotel_id", "hotel_name", "city", "hotel_rating",
+       "ever_clicked", "first_clicked_at",
+       "list_views_before_click", "list_dwell_seconds_before_click", "card_hover_seconds_before_click",
+       "ai_summary_visible_s_before_click", "ai_summary_hover_s_before_click",
+       "description_visible_s_before_click", "description_hover_s_before_click",
+       "rating_visible_s_before_click", "rating_hover_s_before_click",
+       "price_visible_s_before_click", "price_hover_s_before_click"], rows));
+  } catch (e) { console.error(e); res.status(500).json({ error: "export failed" }); }
+});
+
 /* timestamped interaction log: one row per detail-page click / hover segment */
 app.get("/api/admin/export/interactions.csv", requireAdmin, async (req, res) => {
   try {
@@ -1027,6 +1053,7 @@ const ADMIN_HTML = `<!doctype html>
       <a class="dl" href="/api/admin/export/review_votes.csv">Export review likes CSV</a>
       <a class="dl" href="/api/admin/export/saves.csv">Export saves CSV</a>
       <a class="dl" href="/api/admin/export/interactions.csv">Export interaction timeline CSV</a>
+      <a class="dl" href="/api/admin/export/hover_before_click.csv">Export pre-click attention CSV</a>
       <a class="dl" href="/api/admin/export/hotel_content.csv">Export hotel content + text stats CSV</a>
       <a class="dl" href="/api/admin/export/reviews.csv">Export all reviews CSV</a>
       <a class="dl" href="/api/admin/export/summary_stats.csv">Export summary statistics CSV</a>
@@ -1183,7 +1210,7 @@ You can now close this window and return to the questionnaire."></textarea>
       <div style="display:flex;gap:10px;align-items:center;margin-top:10px"><button class="btn" id="listUiSave">Save now</button><span class="muted" id="listUiMsg"></span></div>
     </div>
 
-    <h2>AI summary appearance</h2>
+    <h2>Card appearance (AI summary, description, title, rating, price)</h2>
     <div class="panel" id="aiStylePanel">
       <div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-end">
         <label style="font-size:13px">"AI summary" label size
@@ -1192,7 +1219,7 @@ You can now close this window and return to the questionnaire."></textarea>
           </select></label>
         <label style="font-size:13px">Summary text weight
           <select id="aisBold" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
-            <option value="off">Normal</option><option value="on" selected>Bold (default)</option>
+            <option value="off" selected>Normal (default)</option><option value="on">Bold</option>
           </select></label>
         <label style="font-size:13px">Summary text size
           <select id="aisSize" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
@@ -1201,6 +1228,28 @@ You can now close this window and return to the questionnaire."></textarea>
         <label style="font-size:13px">Highlight box around the summary
           <select id="aisBox" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
             <option value="off" selected>Off (default)</option><option value="on">On (tinted box, orange border)</option>
+          </select></label>
+        <label style="font-size:13px">Summary text color
+          <input type="color" id="aisColor" value="#3D5860" style="display:block;width:64px;height:30px;padding:0;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
+        <label style="font-size:13px">"AI summary" label color
+          <input type="color" id="aisBadgeColor" value="#E8542F" style="display:block;width:64px;height:30px;padding:0;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
+        <label style="font-size:13px">Description text size
+          <select id="aisDescSize" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
+            <option value="sm" selected>Small (default)</option><option value="md">Medium</option><option value="lg">Large</option>
+          </select></label>
+        <label style="font-size:13px">Description color
+          <input type="color" id="aisDescColor" value="#122B33" style="display:block;width:64px;height:30px;padding:0;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
+        <label style="font-size:13px">Hotel name size
+          <select id="aisTitleSize" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
+            <option value="sm">Small</option><option value="md" selected>Medium (default)</option><option value="lg">Large</option>
+          </select></label>
+        <label style="font-size:13px">Rating row size
+          <select id="aisRatingSize" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
+            <option value="sm">Small</option><option value="md" selected>Medium (default)</option><option value="lg">Large</option>
+          </select></label>
+        <label style="font-size:13px">Price size
+          <select id="aisPriceSize" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
+            <option value="sm">Small</option><option value="md" selected>Medium (default)</option><option value="lg">Large</option>
           </select></label>
         <button class="btn" id="aiStyleSave">Save now</button><span class="muted" id="aiStyleMsg"></span>
       </div>
@@ -1668,7 +1717,9 @@ You can now close this window and return to the questionnaire."></textarea>
     document.getElementById('welcomeText').value = d.welcome || d.welcomeDefault || '';
     elemDefs = d.elementList || []; renderElems(d.elements || {});
     document.getElementById('saveSize').value = d.saveSize || 'lg';
-    const ais = d.aiStyle || {}; aisBadge.value = ais.badge || 'lg'; aisBold.value = ais.bold || 'on'; aisSize.value = ais.size || 'sm'; aisBox.value = ais.box || 'off';
+    const ais = d.aiStyle || {}; aisBadge.value = ais.badge || 'lg'; aisBold.value = ais.bold || 'off'; aisSize.value = ais.size || 'sm'; aisBox.value = ais.box || 'off';
+    aisColor.value = ais.aiColor || '#3D5860'; aisBadgeColor.value = ais.badgeColor || '#E8542F'; aisDescSize.value = ais.descSize || 'sm'; aisDescColor.value = ais.descColor || '#122B33';
+    aisTitleSize.value = ais.titleSize || 'md'; aisRatingSize.value = ais.ratingSize || 'md'; aisPriceSize.value = ais.priceSize || 'md';
     const lu = d.listUi || {}; document.getElementById('listFirst').value = lu.first ?? '20'; document.getElementById('listNav').value = (lu.nav === 'scroll') ? 'scroll' : 'pages';
     document.getElementById('goodbyeText').value = d.goodbye || ''; document.getElementById('returnUrl').value = d.returnUrl || '';
     const ex=d.exitTexts||{}; ex1T.value=ex.s1Title||''; ex1X.value=ex.s1Text||''; ex2T.value=ex.s2Title||''; ex2X.value=ex.s2Text||'';
@@ -1804,7 +1855,7 @@ You can now close this window and return to the questionnaire."></textarea>
   document.getElementById('goodbyeSave').onclick=async()=>{ const m=document.getElementById('goodbyeMsg'); try{ m.textContent='Saving…'; await saveGoodbye(); m.style.color='#2E7D5B'; m.textContent='Saved'; }catch(e){ m.style.color='#B3261E'; m.textContent=e.message; } };
 
   async function saveAiStyle(){
-    const v={badge:aisBadge.value,bold:aisBold.value,size:aisSize.value,box:aisBox.value};
+    const v={badge:aisBadge.value,bold:aisBold.value,size:aisSize.value,box:aisBox.value,aiColor:aisColor.value,badgeColor:aisBadgeColor.value,descSize:aisDescSize.value,descColor:aisDescColor.value,titleSize:aisTitleSize.value,ratingSize:aisRatingSize.value,priceSize:aisPriceSize.value};
     const r=await fetch('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'ai_style',value:JSON.stringify(v)})});
     const d=await r.json(); if(!r.ok) throw new Error(d.error||'Save failed');
   }

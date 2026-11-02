@@ -234,7 +234,10 @@ function useShow() { const ui = React.useContext(UiContext); return (key) => ui[
 function useAiStyle() {
   const ui = React.useContext(UiContext);
   const a = (ui && ui.__aiStyle) || {};
-  return { badgeBig: (a.badge || "lg") !== "sm", bold: (a.bold || "on") !== "off", size: a.size || "sm", box: (a.box || "off") === "on" };
+  const hex = v => (typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v)) ? v : "";
+  return { badgeBig: (a.badge || "lg") !== "sm", bold: (a.bold || "off") === "on", size: a.size || "sm", box: (a.box || "off") === "on",
+           aiColor: hex(a.aiColor), badgeColor: hex(a.badgeColor), descSize: a.descSize || "sm", descColor: hex(a.descColor),
+           titleSize: a.titleSize || "md", ratingSize: a.ratingSize || "md", priceSize: a.priceSize || "md" };
 }
 
 /* ----------------------- atoms ----------------------- */
@@ -301,7 +304,8 @@ function firstSentence(text) {
 }
 
 function AiBadge({ color = C.buoy }) {
-  const { badgeBig } = useAiStyle();
+  const { badgeBig, badgeColor } = useAiStyle();
+  if (badgeColor) color = badgeColor;
   return (
     <span className="wp-tip" tabIndex={0} data-tip={AI_TIP} aria-label={`AI summary. ${AI_TIP}`} style={badgeBig ? {
       flex: "0 0 auto", fontFamily: "'Roboto Mono', monospace", fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap",
@@ -485,7 +489,7 @@ function DetailPage({ listing, onBack, votes, showAi = true }) {
           {headerOrder.map(k => {
             if (k === "description") {
               const desc = listing.about && listing.about.trim() && listing.about.trim() !== (listing.seo || "").trim() ? listing.about.trim() : "";
-              return desc && show("detail.description") ? <Zone key={k} hotelId={listing.id} z="desc"><p className="wp-text" style={{ fontSize: 15, lineHeight: 1.7, color: C.ink, margin: "0 0 14px", maxWidth: 720 }}>{desc}</p></Zone> : null;
+              return desc && show("detail.description") ? <Zone key={k} hotelId={listing.id} z="desc"><p className="wp-text" style={{ fontSize: { sm: 15, md: 16, lg: 17 }[aiSt.descSize], lineHeight: 1.7, color: aiSt.descColor || C.ink, margin: "0 0 14px", maxWidth: 720 }}>{desc}</p></Zone> : null;
             }
             if (k === "save") return show("detail.save") && Track.pid ? (
               <div key={k} style={{ paddingTop: 14, borderTop: `1px solid ${C.line}`, marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -509,7 +513,7 @@ function DetailPage({ listing, onBack, votes, showAi = true }) {
         if (k === "ai") return listing.seo && showAi ? (
           <Zone key={k} hotelId={listing.id} z="ai" style={{ background: aiSt.box ? "#FDF3ED" : C.card, border: aiSt.box ? `1.5px solid ${C.buoy}` : `1px solid ${C.line}`, borderRadius: 12, padding: 20, marginBottom: 20, display: "flex", gap: 10, alignItems: "flex-start" }}>
             <AiBadge />
-            <p className="wp-text" style={{ fontSize: { sm: 15, md: 16, lg: 17 }[aiSt.size], lineHeight: 1.7, color: aiSt.bold ? C.ink : C.inkSoft, fontWeight: aiSt.bold ? 600 : 400, margin: 0 }}>{listing.seo}</p>
+            <p className="wp-text" style={{ fontSize: { sm: 15, md: 16, lg: 17 }[aiSt.size], lineHeight: 1.7, color: aiSt.aiColor || (aiSt.bold ? C.ink : C.inkSoft), fontWeight: aiSt.bold ? 600 : 400, margin: 0 }}>{listing.seo}</p>
           </Zone>
         ) : null;
         if (k === "reviews") return show("reviews.section") ? <GuestReviews key={k} hotelId={listing.id} /> : null;
@@ -1476,7 +1480,7 @@ function CityHotelRow({ l, onOpen, votes, showAi = true }) {
   const aiSt = useAiStyle();
   let body = null;
   if (showSeo) {
-    body = <><AiBadge /><p className="wp-text" style={{ fontSize: { sm: 13, md: 14.5, lg: 16 }[aiSt.size], lineHeight: 1.6, color: aiSt.bold ? C.ink : C.inkSoft, fontWeight: aiSt.bold ? 600 : 400, margin: 0 }}>{l.seo}</p></>;
+    body = <><AiBadge /><p className="wp-text" style={{ fontSize: { sm: 13, md: 14.5, lg: 16 }[aiSt.size], lineHeight: 1.6, color: aiSt.aiColor || (aiSt.bold ? C.ink : C.inkSoft), fontWeight: aiSt.bold ? 600 : 400, margin: 0 }}>{l.seo}</p></>;
   } else if (quote.status === "loading") {
     body = <span style={{ fontSize: 12.5, color: C.inkSoft, display: "inline-flex", gap: 8, alignItems: "center" }}><Spinner /> Loading a guest quote…</span>;
   } else if (quote.status === "error") {
@@ -1511,14 +1515,14 @@ function CityHotelRow({ l, onOpen, votes, showAi = true }) {
         <CityArt className="wp-art" gradient={l.gradient} image={l.image} imageFallback={l.imageRemote} />
       </div>
       <div className="wp-text" style={{ padding: "14px 18px", minWidth: 0 }}>
-        <div className="wp-text" style={{ fontFamily: "'Poppins', sans-serif", fontSize: 18, fontWeight: 700, color: C.ink, lineHeight: 1.25 }}>{l.name}</div>
+        <div className="wp-text" style={{ fontFamily: "'Poppins', sans-serif", fontSize: { sm: 16, md: 18, lg: 21 }[aiSt.titleSize], fontWeight: 700, color: C.ink, lineHeight: 1.25 }}>{l.name}</div>
         <Zone hotelId={l.id} z="rating" style={{ display: "flex", alignItems: "center", gap: 8, margin: "6px 0 10px", flexWrap: "wrap" }}>
-          <Buoys value={l.rating} size={12} />
-          <span style={{ fontWeight: 700, fontSize: 13.5, color: C.ink }}>{l.rating.toFixed(1)}</span>
-          {show("list.reviewCount") && <span style={{ fontSize: 12.5, color: C.inkSoft }}>({(l.reviewCount || 0).toLocaleString()})</span>}
+          <Buoys value={l.rating} size={{ sm: 10.5, md: 12, lg: 14 }[aiSt.ratingSize]} />
+          <span style={{ fontWeight: 700, fontSize: { sm: 12, md: 13.5, lg: 15.5 }[aiSt.ratingSize], color: C.ink }}>{l.rating.toFixed(1)}</span>
+          {show("list.reviewCount") && <span style={{ fontSize: { sm: 11, md: 12.5, lg: 14 }[aiSt.ratingSize], color: C.inkSoft }}>({(l.reviewCount || 0).toLocaleString()})</span>}
         </Zone>
         {layout.list.map(k => {
-          if (k === "description") return desc && show("list.description") ? <Zone key={k} hotelId={l.id} z="desc"><p className="wp-text" style={{ fontSize: 13.5, lineHeight: 1.6, color: C.ink, margin: "0 0 10px", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{desc}</p></Zone> : null;
+          if (k === "description") return desc && show("list.description") ? <Zone key={k} hotelId={l.id} z="desc"><p className="wp-text" style={{ fontSize: { sm: 13.5, md: 15, lg: 16.5 }[aiSt.descSize], lineHeight: 1.6, color: aiSt.descColor || C.ink, margin: "0 0 10px", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{desc}</p></Zone> : null;
           if (k === "ai") return body ? (
             <Zone key={k} hotelId={l.id} z="ai" style={showSeo && aiSt.box
               ? { display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 10, background: "#FDF3ED", border: `1.5px solid ${C.buoy}`, borderRadius: 10, padding: "10px 14px" }
@@ -1536,7 +1540,7 @@ function CityHotelRow({ l, onOpen, votes, showAi = true }) {
               {show("list.price") && l.price ? (
                 <div>
                   <div style={{ fontSize: 12, color: C.inkSoft }}>from</div>
-                  <div style={{ fontFamily: "'Poppins', sans-serif", fontSize: 20, fontWeight: 700, color: C.ink, lineHeight: 1.1 }}>{l.price.replace(/^from\s*/i, "")}</div>
+                  <div style={{ fontFamily: "'Poppins', sans-serif", fontSize: { sm: 17, md: 20, lg: 24 }[aiSt.priceSize], fontWeight: 700, color: C.ink, lineHeight: 1.1 }}>{l.price.replace(/^from\s*/i, "")}</div>
                 </div>
               ) : <span />}
               {show("list.check") && (
