@@ -174,9 +174,9 @@ export async function init() {
   // review_ms = ms the reviews section was on screen; review_seen = deepest review reached (1-based); review_total = reviews available
   await pool.query("ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS review_ms BIGINT DEFAULT 0");
   await pool.query("ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS hover_ms BIGINT DEFAULT 0");
-  for (const c of ["ai_vis_ms","ai_hov_ms","desc_vis_ms","desc_hov_ms","rating_vis_ms","rating_hov_ms","price_vis_ms","price_hov_ms","reviews_hov_ms"])
+  for (const c of ["ai_vis_ms","ai_hov_ms","desc_vis_ms","desc_hov_ms","rating_vis_ms","rating_hov_ms","price_vis_ms","price_hov_ms","reviews_hov_ms","photo_hov_ms","title_hov_ms","save_hov_ms","dislike_hov_ms","check_hov_ms"])
     await pool.query(`ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS ${c} BIGINT DEFAULT 0`);
-  for (const c of ["seen_pre","list_ms_pre","hover_ms_pre","ai_vis_ms_pre","ai_hov_ms_pre","desc_vis_ms_pre","desc_hov_ms_pre","rating_vis_ms_pre","rating_hov_ms_pre","price_vis_ms_pre","price_hov_ms_pre"])
+  for (const c of ["seen_pre","list_ms_pre","hover_ms_pre","ai_vis_ms_pre","ai_hov_ms_pre","desc_vis_ms_pre","desc_hov_ms_pre","rating_vis_ms_pre","rating_hov_ms_pre","price_vis_ms_pre","price_hov_ms_pre","photo_hov_ms_pre","title_hov_ms_pre","save_hov_ms_pre","dislike_hov_ms_pre","check_hov_ms_pre"])
     await pool.query(`ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS ${c} BIGINT DEFAULT 0`);
   for (const c of ["first_seen_at","first_click_at","last_event_at"])
     await pool.query(`ALTER TABLE hotel_events ADD COLUMN IF NOT EXISTS ${c} TIMESTAMPTZ`);
@@ -226,6 +226,10 @@ export async function init() {
   await pool.query("ALTER TABLE participants ADD COLUMN IF NOT EXISTS exited_at TIMESTAMPTZ");
   await pool.query("ALTER TABLE participants ADD COLUMN IF NOT EXISTS booked_hotel TEXT");
   await pool.query("ALTER TABLE participants ADD COLUMN IF NOT EXISTS list_visits INTEGER DEFAULT 0");
+  for (const c of ["search_ms", "product_ms", "mouse_travel_px"]) await pool.query(`ALTER TABLE participants ADD COLUMN IF NOT EXISTS ${c} BIGINT DEFAULT 0`);
+  for (const c of ["pager_clicks", "saves_opens", "gallery_clicks", "card_hover_switches"]) await pool.query(`ALTER TABLE participants ADD COLUMN IF NOT EXISTS ${c} INTEGER DEFAULT 0`);
+  await pool.query("ALTER TABLE participants ADD COLUMN IF NOT EXISTS exit_started_at TIMESTAMPTZ");
+  for (const c of ["device_ua", "device_screen", "device_viewport", "device_dpr", "device_tz"]) await pool.query(`ALTER TABLE participants ADD COLUMN IF NOT EXISTS ${c} TEXT`);
   await pool.query("ALTER TABLE hotels ADD COLUMN IF NOT EXISTS source_id TEXT");
   await pool.query("ALTER TABLE hotels ADD COLUMN IF NOT EXISTS details JSONB");
   for (const c of ["location TEXT", "date_visited TEXT", "photos JSONB", "language TEXT", "contributions INTEGER", "avatar TEXT"]) await pool.query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS ${c}`);
@@ -665,7 +669,7 @@ export async function resetContent() {
 }
 
 /* timestamped interaction log: every detail-page click and every hover segment */
-const INTERACTION_TYPES = new Set(["click", "card_hover", "ai_hover", "desc_hover", "rating_hover", "price_hover", "reviews_hover"]);
+const INTERACTION_TYPES = new Set(["click", "card_hover", "ai_hover", "desc_hover", "rating_hover", "price_hover", "reviews_hover", "photo_hover", "title_hover", "save_hover", "dislike_hover", "check_hover"]);
 export async function logInteractions(pid, evs) {
   if (!pid || !Array.isArray(evs) || !evs.length) return;
   const rows = [];
@@ -1151,16 +1155,70 @@ export async function addDwell(pid, ms) {
   );
 }
 
+/* participant-level page totals & UI counters from a heartbeat:
+   searchMs / productMs = foreground ms on the search page / any product page since the last beat;
+   pager / savesOpens / gallery = pagination clicks, Saves-drawer opens, photo-gallery interactions */
+export async function addPageStats(pid, { searchMs = 0, productMs = 0, pager = 0, savesOpens = 0, gallery = 0, mouseTravel = 0, cardSwitches = 0 } = {}) {
+  const clampMs = v => Math.max(0, Math.min(Math.round(Number(v) || 0), 5 * 60 * 1000));
+  const clampN = v => Math.max(0, Math.min(Math.round(Number(v) || 0), 50));
+  searchMs = clampMs(searchMs); productMs = clampMs(productMs); pager = clampN(pager); savesOpens = clampN(savesOpens); gallery = clampN(gallery);
+  mouseTravel = Math.max(0, Math.min(Math.round(Number(mouseTravel) || 0), 100000)); cardSwitches = clampN(cardSwitches);
+  if (!pid || (!searchMs && !productMs && !pager && !savesOpens && !gallery && !mouseTravel && !cardSwitches)) return;
+  if (!HAS_DB) {
+    const p = mem.participants[pid] || (mem.participants[pid] = { firstSeen: Date.now(), lastSeen: Date.now(), totalMs: 0, siteFav: false });
+    p.searchMs = (p.searchMs || 0) + searchMs; p.productMs = (p.productMs || 0) + productMs;
+    p.pagerClicks = (p.pagerClicks || 0) + pager; p.savesOpens = (p.savesOpens || 0) + savesOpens; p.galleryClicks = (p.galleryClicks || 0) + gallery;
+    p.mouseTravelPx = (p.mouseTravelPx || 0) + mouseTravel; p.cardSwitches = (p.cardSwitches || 0) + cardSwitches;
+    return;
+  }
+  await pool.query(
+    `INSERT INTO participants(pid,search_ms,product_ms,pager_clicks,saves_opens,gallery_clicks,mouse_travel_px,card_hover_switches,last_seen) VALUES($1,$2,$3,$4,$5,$6,$7,$8,now())
+     ON CONFLICT (pid) DO UPDATE SET search_ms=COALESCE(participants.search_ms,0)+$2, product_ms=COALESCE(participants.product_ms,0)+$3,
+       pager_clicks=COALESCE(participants.pager_clicks,0)+$4, saves_opens=COALESCE(participants.saves_opens,0)+$5, gallery_clicks=COALESCE(participants.gallery_clicks,0)+$6,
+       mouse_travel_px=COALESCE(participants.mouse_travel_px,0)+$7, card_hover_switches=COALESCE(participants.card_hover_switches,0)+$8, last_seen=now()`,
+    [pid, searchMs, productMs, pager, savesOpens, gallery, mouseTravel, cardSwitches]
+  );
+}
+
+/* one-time device snapshot: keeps the FIRST device this participant registered from */
+export async function setDevice(pid, { ua, screen, viewport, dpr, tz } = {}) {
+  if (!pid) return;
+  const s = (v, n = 300) => String(v == null ? "" : v).slice(0, n);
+  if (!HAS_DB) {
+    const p = mem.participants[pid] || (mem.participants[pid] = { firstSeen: Date.now(), lastSeen: Date.now(), totalMs: 0, siteFav: false });
+    if (!p.deviceUa) { p.deviceUa = s(ua); p.deviceScreen = s(screen, 20); p.deviceViewport = s(viewport, 20); p.deviceDpr = s(dpr, 10); p.deviceTz = s(tz, 60); }
+    return;
+  }
+  await pool.query(
+    `INSERT INTO participants(pid,device_ua,device_screen,device_viewport,device_dpr,device_tz,last_seen) VALUES($1,$2,$3,$4,$5,$6,now())
+     ON CONFLICT (pid) DO UPDATE SET device_ua=COALESCE(participants.device_ua,$2), device_screen=COALESCE(participants.device_screen,$3),
+       device_viewport=COALESCE(participants.device_viewport,$4), device_dpr=COALESCE(participants.device_dpr,$5), device_tz=COALESCE(participants.device_tz,$6)`,
+    [pid, s(ua), s(screen, 20), s(viewport, 20), s(dpr, 10), s(tz, 60)]
+  );
+}
+
+/* first time the exit-review modal opened (seconds_in_exit_flow = finished_at − this) */
+export async function setExitStarted(pid) {
+  if (!pid) return;
+  if (!HAS_DB) {
+    const p = mem.participants[pid] || (mem.participants[pid] = { firstSeen: Date.now(), lastSeen: Date.now(), totalMs: 0, siteFav: false });
+    if (!p.exitStartedAt) p.exitStartedAt = new Date().toISOString();
+    return;
+  }
+  await pool.query("UPDATE participants SET exit_started_at=COALESCE(exit_started_at, now()) WHERE pid=$1", [pid]);
+}
+
 /* record a hotel event.
    type: 'seen' | 'click' (n = count, default 1)
          'list_ms' | 'detail_ms' (n = milliseconds to add) */
 const EVENT_COLS = { seen: "seen", click: "clicks", list_ms: "list_ms", detail_ms: "detail_ms", review_ms: "review_ms", hover_ms: "hover_ms", review_seen: "review_seen", review_total: "review_total",
-  ai_vis_ms: "ai_vis_ms", ai_hov_ms: "ai_hov_ms", desc_vis_ms: "desc_vis_ms", desc_hov_ms: "desc_hov_ms", rating_vis_ms: "rating_vis_ms", rating_hov_ms: "rating_hov_ms", price_vis_ms: "price_vis_ms", price_hov_ms: "price_hov_ms", reviews_hov_ms: "reviews_hov_ms" };
-const EVENT_MAX  = { seen: 50, click: 50, list_ms: 10 * 60 * 1000, detail_ms: 10 * 60 * 1000, review_ms: 10 * 60 * 1000, hover_ms: 10 * 60 * 1000, ai_vis_ms: 10*60*1000, ai_hov_ms: 10*60*1000, desc_vis_ms: 10*60*1000, desc_hov_ms: 10*60*1000, rating_vis_ms: 10*60*1000, rating_hov_ms: 10*60*1000, price_vis_ms: 10*60*1000, price_hov_ms: 10*60*1000, reviews_hov_ms: 10*60*1000, review_seen: 500, review_total: 500 };
+  ai_vis_ms: "ai_vis_ms", ai_hov_ms: "ai_hov_ms", desc_vis_ms: "desc_vis_ms", desc_hov_ms: "desc_hov_ms", rating_vis_ms: "rating_vis_ms", rating_hov_ms: "rating_hov_ms", price_vis_ms: "price_vis_ms", price_hov_ms: "price_hov_ms", reviews_hov_ms: "reviews_hov_ms",
+  photo_hov_ms: "photo_hov_ms", title_hov_ms: "title_hov_ms", save_hov_ms: "save_hov_ms", dislike_hov_ms: "dislike_hov_ms", check_hov_ms: "check_hov_ms" };
+const EVENT_MAX  = { seen: 50, click: 50, list_ms: 10 * 60 * 1000, detail_ms: 10 * 60 * 1000, review_ms: 10 * 60 * 1000, hover_ms: 10 * 60 * 1000, ai_vis_ms: 10*60*1000, ai_hov_ms: 10*60*1000, desc_vis_ms: 10*60*1000, desc_hov_ms: 10*60*1000, rating_vis_ms: 10*60*1000, rating_hov_ms: 10*60*1000, price_vis_ms: 10*60*1000, price_hov_ms: 10*60*1000, reviews_hov_ms: 10*60*1000, photo_hov_ms: 10*60*1000, title_hov_ms: 10*60*1000, save_hov_ms: 10*60*1000, dislike_hov_ms: 10*60*1000, check_hov_ms: 10*60*1000, review_seen: 500, review_total: 500 };
 const EVENT_SET_MAX = new Set(["review_seen", "review_total"]);   // these store the maximum, not a sum
 /* metrics that also keep a twin counter accumulated only while the participant has
    NOT yet opened this hotel's product page (clicks = 0) — the "_before_product_page" columns */
-const PRE_TYPES = new Set(["seen", "list_ms", "hover_ms", "ai_vis_ms", "ai_hov_ms", "desc_vis_ms", "desc_hov_ms", "rating_vis_ms", "rating_hov_ms", "price_vis_ms", "price_hov_ms"]);
+const PRE_TYPES = new Set(["seen", "list_ms", "hover_ms", "ai_vis_ms", "ai_hov_ms", "desc_vis_ms", "desc_hov_ms", "rating_vis_ms", "rating_hov_ms", "price_vis_ms", "price_hov_ms", "photo_hov_ms", "title_hov_ms", "save_hov_ms", "dislike_hov_ms", "check_hov_ms"]);
 export async function trackHotelEvent(pid, hotelId, type, n = 1) {
   if (!pid || !hotelId || !EVENT_COLS[type]) return;
   n = Math.max(0, Math.min(EVENT_MAX[type], Math.round(Number(n) || 0)));
@@ -1234,7 +1292,9 @@ export async function hotelEventRows() {
                    review_ms: e.reviewMs || 0, hover_ms: e.hoverMs || 0, review_seen: e.reviewSeen || 0, review_total: e.reviewTotal || 0,
                    ai_vis_ms: e.ai_vis_ms || 0, ai_hov_ms: e.ai_hov_ms || 0, desc_vis_ms: e.desc_vis_ms || 0, desc_hov_ms: e.desc_hov_ms || 0,
                    rating_vis_ms: e.rating_vis_ms || 0, rating_hov_ms: e.rating_hov_ms || 0, price_vis_ms: e.price_vis_ms || 0, price_hov_ms: e.price_hov_ms || 0, reviews_hov_ms: e.reviews_hov_ms || 0,
+                   photo_hov_ms: e.photo_hov_ms || 0, title_hov_ms: e.title_hov_ms || 0, save_hov_ms: e.save_hov_ms || 0, dislike_hov_ms: e.dislike_hov_ms || 0, check_hov_ms: e.check_hov_ms || 0,
                    seen_pre: e.seen_pre || 0, list_ms_pre: e.list_ms_pre || 0, hover_ms_pre: e.hover_ms_pre || 0, ai_vis_ms_pre: e.ai_vis_ms_pre || 0, ai_hov_ms_pre: e.ai_hov_ms_pre || 0, desc_vis_ms_pre: e.desc_vis_ms_pre || 0, desc_hov_ms_pre: e.desc_hov_ms_pre || 0, rating_vis_ms_pre: e.rating_vis_ms_pre || 0, rating_hov_ms_pre: e.rating_hov_ms_pre || 0, price_vis_ms_pre: e.price_vis_ms_pre || 0, price_hov_ms_pre: e.price_hov_ms_pre || 0,
+                   photo_hov_ms_pre: e.photo_hov_ms_pre || 0, title_hov_ms_pre: e.title_hov_ms_pre || 0, save_hov_ms_pre: e.save_hov_ms_pre || 0, dislike_hov_ms_pre: e.dislike_hov_ms_pre || 0, check_hov_ms_pre: e.check_hov_ms_pre || 0,
                    first_seen_at: e.firstSeenAt || "", first_click_at: e.firstClickAt || "", last_event_at: e.lastEventAt || "" });
       }
     }
@@ -1244,7 +1304,7 @@ export async function hotelEventRows() {
         if (out.some(r => r.pid === pid && r.hotel_id === hid)) continue;
         const h = hotelOf(hid);
         out.push({ pid, hotel_id: hid, hotel_name: h.name || hid, city: h.city || "", rating: h.rating ?? "", review_count: h.reviewCount ?? "",
-                   seen: 0, clicks: 0, vote: choice, vote_source: (v.sources || {})[pid] || "", list_ms: 0, detail_ms: 0, review_ms: 0, hover_ms: 0, review_seen: 0, review_total: 0, ai_vis_ms: 0, ai_hov_ms: 0, desc_vis_ms: 0, desc_hov_ms: 0, rating_vis_ms: 0, rating_hov_ms: 0, price_vis_ms: 0, price_hov_ms: 0, reviews_hov_ms: 0, seen_pre: 0, list_ms_pre: 0, hover_ms_pre: 0, ai_vis_ms_pre: 0, ai_hov_ms_pre: 0, desc_vis_ms_pre: 0, desc_hov_ms_pre: 0, rating_vis_ms_pre: 0, rating_hov_ms_pre: 0, price_vis_ms_pre: 0, price_hov_ms_pre: 0, first_seen_at: "", first_click_at: "", last_event_at: "" });
+                   seen: 0, clicks: 0, vote: choice, vote_source: (v.sources || {})[pid] || "", list_ms: 0, detail_ms: 0, review_ms: 0, hover_ms: 0, review_seen: 0, review_total: 0, ai_vis_ms: 0, ai_hov_ms: 0, desc_vis_ms: 0, desc_hov_ms: 0, rating_vis_ms: 0, rating_hov_ms: 0, price_vis_ms: 0, price_hov_ms: 0, reviews_hov_ms: 0, photo_hov_ms: 0, title_hov_ms: 0, save_hov_ms: 0, dislike_hov_ms: 0, check_hov_ms: 0, seen_pre: 0, list_ms_pre: 0, hover_ms_pre: 0, ai_vis_ms_pre: 0, ai_hov_ms_pre: 0, desc_vis_ms_pre: 0, desc_hov_ms_pre: 0, rating_vis_ms_pre: 0, rating_hov_ms_pre: 0, price_vis_ms_pre: 0, price_hov_ms_pre: 0, photo_hov_ms_pre: 0, title_hov_ms_pre: 0, save_hov_ms_pre: 0, dislike_hov_ms_pre: 0, check_hov_ms_pre: 0, first_seen_at: "", first_click_at: "", last_event_at: "" });
       }
     }
   } else {
@@ -1255,8 +1315,10 @@ export async function hotelEventRows() {
              COALESCE(e.review_ms,0) AS review_ms, COALESCE(e.hover_ms,0) AS hover_ms, COALESCE(e.review_seen,0) AS review_seen, COALESCE(e.review_total,0) AS review_total,
              COALESCE(e.ai_vis_ms,0) AS ai_vis_ms, COALESCE(e.ai_hov_ms,0) AS ai_hov_ms, COALESCE(e.desc_vis_ms,0) AS desc_vis_ms, COALESCE(e.desc_hov_ms,0) AS desc_hov_ms,
              COALESCE(e.rating_vis_ms,0) AS rating_vis_ms, COALESCE(e.rating_hov_ms,0) AS rating_hov_ms, COALESCE(e.price_vis_ms,0) AS price_vis_ms, COALESCE(e.price_hov_ms,0) AS price_hov_ms, COALESCE(e.reviews_hov_ms,0) AS reviews_hov_ms,
+             COALESCE(e.photo_hov_ms,0) AS photo_hov_ms, COALESCE(e.title_hov_ms,0) AS title_hov_ms, COALESCE(e.save_hov_ms,0) AS save_hov_ms, COALESCE(e.dislike_hov_ms,0) AS dislike_hov_ms, COALESCE(e.check_hov_ms,0) AS check_hov_ms,
              e.first_seen_at, e.first_click_at, e.last_event_at,
-             COALESCE(e.seen_pre,0) AS seen_pre, COALESCE(e.list_ms_pre,0) AS list_ms_pre, COALESCE(e.hover_ms_pre,0) AS hover_ms_pre, COALESCE(e.ai_vis_ms_pre,0) AS ai_vis_ms_pre, COALESCE(e.ai_hov_ms_pre,0) AS ai_hov_ms_pre, COALESCE(e.desc_vis_ms_pre,0) AS desc_vis_ms_pre, COALESCE(e.desc_hov_ms_pre,0) AS desc_hov_ms_pre, COALESCE(e.rating_vis_ms_pre,0) AS rating_vis_ms_pre, COALESCE(e.rating_hov_ms_pre,0) AS rating_hov_ms_pre, COALESCE(e.price_vis_ms_pre,0) AS price_vis_ms_pre, COALESCE(e.price_hov_ms_pre,0) AS price_hov_ms_pre
+             COALESCE(e.seen_pre,0) AS seen_pre, COALESCE(e.list_ms_pre,0) AS list_ms_pre, COALESCE(e.hover_ms_pre,0) AS hover_ms_pre, COALESCE(e.ai_vis_ms_pre,0) AS ai_vis_ms_pre, COALESCE(e.ai_hov_ms_pre,0) AS ai_hov_ms_pre, COALESCE(e.desc_vis_ms_pre,0) AS desc_vis_ms_pre, COALESCE(e.desc_hov_ms_pre,0) AS desc_hov_ms_pre, COALESCE(e.rating_vis_ms_pre,0) AS rating_vis_ms_pre, COALESCE(e.rating_hov_ms_pre,0) AS rating_hov_ms_pre, COALESCE(e.price_vis_ms_pre,0) AS price_vis_ms_pre, COALESCE(e.price_hov_ms_pre,0) AS price_hov_ms_pre,
+             COALESCE(e.photo_hov_ms_pre,0) AS photo_hov_ms_pre, COALESCE(e.title_hov_ms_pre,0) AS title_hov_ms_pre, COALESCE(e.save_hov_ms_pre,0) AS save_hov_ms_pre, COALESCE(e.dislike_hov_ms_pre,0) AS dislike_hov_ms_pre, COALESCE(e.check_hov_ms_pre,0) AS check_hov_ms_pre
       FROM (SELECT pid, hotel_id FROM hotel_events UNION SELECT voter_id, hotel_id FROM votes) k
       LEFT JOIN hotel_events e ON e.pid=k.pid AND e.hotel_id=k.hotel_id
       LEFT JOIN votes v ON v.voter_id=k.pid AND v.hotel_id=k.hotel_id
@@ -1265,6 +1327,8 @@ export async function hotelEventRows() {
     for (const r of rows) out.push({ ...r, rating: r.rating ?? "", review_count: r.review_count ?? "", list_ms: Number(r.list_ms), detail_ms: Number(r.detail_ms), review_ms: Number(r.review_ms), hover_ms: Number(r.hover_ms),
                 ai_vis_ms: Number(r.ai_vis_ms), ai_hov_ms: Number(r.ai_hov_ms), desc_vis_ms: Number(r.desc_vis_ms), desc_hov_ms: Number(r.desc_hov_ms),
                 rating_vis_ms: Number(r.rating_vis_ms), rating_hov_ms: Number(r.rating_hov_ms), price_vis_ms: Number(r.price_vis_ms), price_hov_ms: Number(r.price_hov_ms), reviews_hov_ms: Number(r.reviews_hov_ms),
+                photo_hov_ms: Number(r.photo_hov_ms), title_hov_ms: Number(r.title_hov_ms), save_hov_ms: Number(r.save_hov_ms), dislike_hov_ms: Number(r.dislike_hov_ms), check_hov_ms: Number(r.check_hov_ms),
+                photo_hov_ms_pre: Number(r.photo_hov_ms_pre), title_hov_ms_pre: Number(r.title_hov_ms_pre), save_hov_ms_pre: Number(r.save_hov_ms_pre), dislike_hov_ms_pre: Number(r.dislike_hov_ms_pre), check_hov_ms_pre: Number(r.check_hov_ms_pre),
                 first_seen_at: r.first_seen_at ? new Date(r.first_seen_at).toISOString() : "", first_click_at: r.first_click_at ? new Date(r.first_click_at).toISOString() : "", last_event_at: r.last_event_at ? new Date(r.last_event_at).toISOString() : "",
                 seen_pre: Number(r.seen_pre), list_ms_pre: Number(r.list_ms_pre), hover_ms_pre: Number(r.hover_ms_pre), ai_vis_ms_pre: Number(r.ai_vis_ms_pre), ai_hov_ms_pre: Number(r.ai_hov_ms_pre), desc_vis_ms_pre: Number(r.desc_vis_ms_pre), desc_hov_ms_pre: Number(r.desc_hov_ms_pre), rating_vis_ms_pre: Number(r.rating_vis_ms_pre), rating_hov_ms_pre: Number(r.rating_hov_ms_pre), price_vis_ms_pre: Number(r.price_vis_ms_pre), price_hov_ms_pre: Number(r.price_hov_ms_pre) });
   }
@@ -1348,6 +1412,11 @@ export async function participantSummaries() {
       return {
         pid,
         totalMs: p.totalMs || 0,
+        listVisits: p.listVisits || 0, searchMs: p.searchMs || 0, productMs: p.productMs || 0,
+        pagerClicks: p.pagerClicks || 0, savesOpens: p.savesOpens || 0, galleryClicks: p.galleryClicks || 0,
+        mouseTravelPx: p.mouseTravelPx || 0, cardSwitches: p.cardSwitches || 0,
+        exitStartedAt: p.exitStartedAt || null,
+        deviceUa: p.deviceUa || "", deviceScreen: p.deviceScreen || "", deviceViewport: p.deviceViewport || "", deviceDpr: p.deviceDpr || "", deviceTz: p.deviceTz || "",
         siteFav: Boolean(p.siteFav),
         consentedAt: p.consentedAt ? new Date(p.consentedAt).toISOString() : null,
         exitedAt: p.exitedAt ? new Date(p.exitedAt).toISOString() : null,
@@ -1371,7 +1440,7 @@ export async function participantSummaries() {
       };
     }).sort((a, b) => b.totalMs - a.totalMs);
   }
-  const parts = await pool.query("SELECT pid,total_ms,site_fav,first_seen,last_seen,consented_at,exited_at,booked_hotel,tutorial_done_at,condition,ai_search,ai_product FROM participants");
+  const parts = await pool.query("SELECT pid,total_ms,site_fav,first_seen,last_seen,consented_at,exited_at,booked_hotel,tutorial_done_at,condition,ai_search,ai_product,list_visits,search_ms,product_ms,pager_clicks,saves_opens,gallery_clicks,mouse_travel_px,card_hover_switches,exit_started_at,device_ua,device_screen,device_viewport,device_dpr,device_tz FROM participants");
   const favs = await pool.query(`SELECT f.pid, f.hotel_id, h.name FROM saves f LEFT JOIN hotels h ON h.id=f.hotel_id`);
   const events = await pool.query(`SELECT e.pid, e.hotel_id, h.name, h.rating, h.review_count, e.seen, e.clicks, e.list_ms, e.detail_ms, e.review_ms, e.review_seen, e.review_total, v.choice, v.source
                                      FROM hotel_events e LEFT JOIN hotels h ON h.id=e.hotel_id
@@ -1387,6 +1456,11 @@ export async function participantSummaries() {
     const o = ensure(p.pid);
     o.totalMs = Number(p.total_ms) || 0; o.siteFav = Boolean(p.site_fav);
     o.firstSeen = p.first_seen; o.lastSeen = p.last_seen; o.consentedAt = p.consented_at; o.exitedAt = p.exited_at || null; o.booked = p.booked_hotel || ""; o.tutorialDoneAt = p.tutorial_done_at || null; o.condition = p.condition || ""; o.aiSearch = p.ai_search; o.aiProduct = p.ai_product;
+    o.listVisits = Number(p.list_visits) || 0; o.searchMs = Number(p.search_ms) || 0; o.productMs = Number(p.product_ms) || 0;
+    o.pagerClicks = Number(p.pager_clicks) || 0; o.savesOpens = Number(p.saves_opens) || 0; o.galleryClicks = Number(p.gallery_clicks) || 0;
+    o.mouseTravelPx = Number(p.mouse_travel_px) || 0; o.cardSwitches = Number(p.card_hover_switches) || 0;
+    o.exitStartedAt = p.exit_started_at || null;
+    o.deviceUa = p.device_ua || ""; o.deviceScreen = p.device_screen || ""; o.deviceViewport = p.device_viewport || ""; o.deviceDpr = p.device_dpr || ""; o.deviceTz = p.device_tz || "";
   }
   for (const f of favs.rows) ensure(f.pid).favHotels.push({ id: f.hotel_id, name: f.name || f.hotel_id });
   for (const e of events.rows) ensure(e.pid).hotels.push({ id: e.hotel_id, name: e.name || e.hotel_id, rating: e.rating ?? null, reviewCount: e.review_count ?? null, seen: e.seen || 0, clicks: e.clicks || 0, listMs: Number(e.list_ms) || 0, detailMs: Number(e.detail_ms) || 0, reviewMs: Number(e.review_ms) || 0, reviewSeen: e.review_seen || 0, reviewTotal: e.review_total || 0, vote: e.choice || "", voteSource: e.source || "" });

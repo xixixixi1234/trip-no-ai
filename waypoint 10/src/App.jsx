@@ -26,9 +26,26 @@ const Track = {
   pid: null,
   visible: new Set(),    // hotel ids whose list card is currently ≥50% in the viewport
   detailId: null,        // hotel whose detail page is open
+  listOpen: false,       // a hotel-list (search) page is on screen
+  stats: { searchMs: 0, productMs: 0, pager: 0, savesOpens: 0, gallery: 0, mouseTravel: 0, cardSwitches: 0 },   // participant-level deltas, shipped with each heartbeat
+  uiCount(k) { if (this.pid && this.stats[k] != null) this.stats[k]++; },
   buffer: {},            // hotelId -> { list_ms, detail_ms } not yet sent
   start(pid) {
     this.pid = pid;
+    try {   // one-time device snapshot (server keeps the FIRST device per participant)
+      postJson("/api/device", { pid, ua: navigator.userAgent, screen: `${window.screen.width}x${window.screen.height}`,
+        viewport: `${window.innerWidth}x${window.innerHeight}`, dpr: window.devicePixelRatio || 1,
+        tz: (Intl.DateTimeFormat().resolvedOptions().timeZone || "") });
+    } catch {}
+    if (!this._mm) {   // mouse travel on the search page (px; steps >400px = re-entry jumps, ignored)
+      this._mm = true;
+      let lx = null, ly = null;
+      window.addEventListener("mousemove", e => {
+        if (!this.pid || document.hidden || !this.listOpen) { lx = e.clientX; ly = e.clientY; return; }
+        if (lx != null) { const d = Math.hypot(e.clientX - lx, e.clientY - ly); if (d > 0 && d < 400) this.stats.mouseTravel += d; }
+        lx = e.clientX; ly = e.clientY;
+      }, { passive: true });
+    }
     if (this._hb) clearInterval(this._hb);
     if (this._tick) clearInterval(this._tick);
     if (this._flush) clearInterval(this._flush);
@@ -38,7 +55,11 @@ const Track = {
       if (!this.pid || document.hidden) { last = Date.now(); return; }
       const now = Date.now();
       const ms = now - last; last = now;
-      if (ms > 0 && ms < 60000) postJson("/api/track/session", { pid: this.pid, ms });
+      if (ms > 0 && ms < 60000) {
+        const st = this.stats; this.stats = { searchMs: 0, productMs: 0, pager: 0, savesOpens: 0, gallery: 0, mouseTravel: 0, cardSwitches: 0 };
+        st.mouseTravel = Math.round(st.mouseTravel);
+        postJson("/api/track/session", { pid: this.pid, ms, ...st });
+      }
     }, 5000);
     // per-hotel dwell: every second, credit 1 s to each visible list card and to the open detail page
     let lastTick = Date.now();
@@ -48,6 +69,7 @@ const Track = {
       for (const id of this.visible) this._add(id, "list_ms", ms);
       for (const k of this.zonesVisible) { const i = k.indexOf("|"); this._add(k.slice(0, i), k.slice(i + 1), ms); }
       if (this.detailId) this._add(this.detailId, "detail_ms", ms);
+      if (this.detailId) this.stats.productMs += ms; else if (this.listOpen) this.stats.searchMs += ms;   // page-level totals
       if (this.reviewsVisibleId) this._add(this.reviewsVisibleId, "review_ms", ms);
     }, 1000);
     this._flush = setInterval(() => this.flush(), 5000);
@@ -64,7 +86,7 @@ const Track = {
   },
   reviewsVisibleId: null,   // hotel whose reviews section is currently on screen
   _hoverT: {},              // hotelId -> mouseenter timestamp
-  hoverStart(id) { this._hoverT[id] = Date.now(); },
+  hoverStart(id) { this._hoverT[id] = Date.now(); if (this._lastCard && this._lastCard !== id) this.uiCount("cardSwitches"); this._lastCard = id; },   // hover moved to a DIFFERENT card = one comparison switch
   hoverEnd(id) { const t = this._hoverT[id]; if (t) { delete this._hoverT[id]; const ms = Date.now() - t; this._add(id, "hover_ms", ms); if (ms >= 150) this.events.push({ hotelId: id, type: "card_hover", ms: Math.round(ms), at: t }); } },
   /* semantic zones (ai / desc / rating / price / reviews): visibility set walked by the heartbeat, hover via enter/leave */
   zonesVisible: new Set(),
@@ -324,6 +346,18 @@ function AiBadge({ color = C.buoy, w }) {
   );
 }
 
+/* hover-only zone (no visibility tracking): accumulates {z}_hov_ms and logs a "{z}_hover" segment */
+function HoverZone({ hotelId, z, children, style, className }) {
+  useEffect(() => () => Track.zoneHoverEnd(hotelId, z + "_vis_ms"), [hotelId, z]);
+  return (
+    <div className={className} style={style}
+      onMouseEnter={() => Track.pid && Track.zoneHoverStart(hotelId, z + "_vis_ms")}
+      onMouseLeave={() => Track.pid && Track.zoneHoverEnd(hotelId, z + "_vis_ms")}>
+      {children}
+    </div>
+  );
+}
+
 /* label in front of the official description (text set in admin "Description label text"; empty = hidden) */
 function DescBadge({ w }) {
   const { descBadgePx, badgeBold, descLabel, descBadgeColor } = useAiStyle();
@@ -501,14 +535,14 @@ function DetailPage({ listing, onBack, votes, showAi = true }) {
         {gallery.length > 1 && show("detail.gallery") && (
           <div style={{ display: "flex", gap: 8, padding: "10px 12px 0", overflowX: "auto" }} aria-label="Hotel photos">
             {gallery.map((g, i) => (
-              <button key={g.src} type="button" onClick={() => setLb(i)} className="wp-btn" aria-label={g.caption ? `Open photo: ${g.caption}` : `Open photo ${i + 1} of ${gallery.length}`}
+              <button key={g.src} type="button" onClick={() => { Track.uiCount("gallery"); setLb(i); }} className="wp-btn" aria-label={g.caption ? `Open photo: ${g.caption}` : `Open photo ${i + 1} of ${gallery.length}`}
                 style={{ padding: 0, border: `2px solid ${i === 0 ? C.ink : C.line}`, borderRadius: 8, overflow: "hidden", width: 88, height: 66, background: C.sea, flex: "0 0 auto" }}>
                 <img src={g.src} alt={g.caption || ""} loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
               </button>
             ))}
           </div>
         )}
-        {lb != null && <Lightbox photos={gallery} index={lb} onClose={() => setLb(null)} onIndex={setLb} />}
+        {lb != null && <Lightbox photos={gallery} index={lb} onClose={() => setLb(null)} onIndex={i => { Track.uiCount("gallery"); setLb(i); }} />}
         <div className="wp-detail-pad" style={{ padding: "22px 24px" }}>
           <div style={{ fontFamily: "'Roboto Mono', monospace", fontSize: 11, letterSpacing: "0.14em", color: C.inkSoft, textTransform: "uppercase", marginBottom: 6 }}>
             {listing.type} · {listing.cityName || listing.city}
@@ -707,6 +741,7 @@ function ExitReview({ pid, saves, onCancel, onFinish }) {
   const [booked, setBooked] = useState("");
   const [busy, setBusy] = useState(false);
   const [tx, setTx] = useState({});
+  useEffect(() => { if (pid) postJson("/api/exit-start", { pid }); }, [pid]);   // when the exit-review modal opens (first time only, server-side)
   useEffect(() => {
     fetchJson(`/api/my-hotels?pid=${encodeURIComponent(pid)}`).then(a => setItems(Array.isArray(a) ? a : [])).catch(() => setItems([]));
     loadConfig().then(c => setTx((c && c.exitTexts) || {}));
@@ -933,7 +968,7 @@ function SavesFab({ allHotels, onOpen }) {
   const items = saves.ids.map(id => allHotels.find(h => h.id === id)).filter(Boolean);
   return (
     <>
-      <button type="button" onClick={() => setOpen(o => !o)} aria-label={`Open saved hotels (${items.length})`}
+      <button type="button" onClick={() => setOpen(o => { if (!o) Track.uiCount("savesOpens"); return !o; })} aria-label={`Open saved hotels (${items.length})`}
         className="wp-btn"
         style={{ position: "fixed", right: 18, bottom: 18, zIndex: 900, display: "inline-flex", alignItems: "center", gap: 8,
                  background: C.ink, color: "#fff", border: "none", borderRadius: 99, padding: "12px 18px", fontWeight: 700, fontSize: 14.5,
@@ -1343,6 +1378,7 @@ function CityPage({ cityKey, onBack, onOpen, votes, favs, cities, hotels: allHot
   const [tut, setTut] = useState(null);   // steps array while the coachmark is active
   const [tutSkip, setTutSkip] = useState(true);
   useEffect(() => { if (pid) postJson("/api/list-visit", { pid }); }, [pid, cityKey]);   // each entry into a hotel list = one search-page viewing (a reload lands on Home, so it does not double-count)
+  useEffect(() => { Track.listOpen = true; return () => { Track.listOpen = false; }; }, []);   // search-page time runs while this list is mounted
   useEffect(() => {
     if (!pid || localStorage.getItem("fah_tut") === "1") return;
     loadConfig().then(c => {
@@ -1447,7 +1483,7 @@ function CityPage({ cityKey, onBack, onOpen, votes, favs, cities, hotels: allHot
 
       {tut && <Coachmark steps={tut} skippable={tutSkip} onDone={() => { setTut(null); localStorage.setItem("fah_tut", "1"); if (pid) postJson("/api/tutorial-done", { pid }); }} />}
       {listUi.nav === "pages" && totalPages > 1 && (
-        <Pagination page={curPage} totalPages={totalPages} onGo={setPage} />
+        <Pagination page={curPage} totalPages={totalPages} onGo={pg => { Track.uiCount("pager"); setPage(pg); }} />
       )}
       {listUi.nav === "scroll" && shownCount < hotels.length && (
         <MoreSentinel key={shownCount} onMore={() => setShownCount(n => Math.min(hotels.length, n + listUi.first))} left={hotels.length - shownCount} />
@@ -1577,11 +1613,11 @@ function CityHotelRow({ l, onOpen, votes, showAi = true }) {
       background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, overflow: "hidden", position: "relative",
     }}>
       {heart}
-      <div style={{ position: "relative" }}>
+      <HoverZone hotelId={l.id} z="photo" style={{ position: "relative" }}>
         <CityArt className="wp-art" gradient={l.gradient} image={l.image} imageFallback={l.imageRemote} />
-      </div>
+      </HoverZone>
       <div className="wp-text" style={{ padding: "14px 18px", minWidth: 0 }}>
-        <div className="wp-text" style={{ fontFamily: "'Poppins', sans-serif", fontSize: aiSt.titlePx, fontWeight: aiSt.titleBold ? 700 : 400, color: C.ink, lineHeight: 1.25 }}>{l.name}</div>
+        <HoverZone hotelId={l.id} z="title"><div className="wp-text" style={{ fontFamily: "'Poppins', sans-serif", fontSize: aiSt.titlePx, fontWeight: aiSt.titleBold ? 700 : 400, color: C.ink, lineHeight: 1.25 }}>{l.name}</div></HoverZone>
         <Zone hotelId={l.id} z="rating" style={{ display: "flex", alignItems: "center", gap: 8, margin: "6px 0 10px", flexWrap: "wrap" }}>
           <Buoys value={l.rating} size={aiSt.ratingPx - 1.5} />
           <span style={{ fontWeight: aiSt.ratingBold ? 700 : 400, fontSize: aiSt.ratingPx, color: C.ink }}>{l.rating.toFixed(1)}</span>
@@ -1597,8 +1633,8 @@ function CityHotelRow({ l, onOpen, votes, showAi = true }) {
           if (k === "vote") return votes && show("list.vote") ? <div key={k} style={{ margin: "2px 0 10px" }}><LikeDislike hotelId={l.id} {...votes} source="list" /></div> : null;
           if (k === "save") return (show("list.save") || show("list.vote")) && Track.pid ? (
             <div key={k} style={{ margin: "2px 0 10px", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              {show("list.save") && <SavePill hotelId={l.id} source="list" size="lg" />}
-              {votes && <LikeDislike hotelId={l.id} {...votes} source="list" size="lg" only="down" />}
+              {show("list.save") && <HoverZone hotelId={l.id} z="save" style={{ display: "inline-flex" }}><SavePill hotelId={l.id} source="list" size="lg" /></HoverZone>}
+              {votes && <HoverZone hotelId={l.id} z="dislike" style={{ display: "inline-flex" }}><LikeDislike hotelId={l.id} {...votes} source="list" size="lg" only="down" /></HoverZone>}
             </div>
           ) : null;
           if (k === "priceCheck") return (show("list.price") && l.price) || show("list.check") ? (
@@ -1610,10 +1646,12 @@ function CityHotelRow({ l, onOpen, votes, showAi = true }) {
                 </div>
               ) : <span />}
               {show("list.check") && (
-                <button type="button" onClick={(e) => { e.stopPropagation(); onOpen(); }} onKeyDown={e => e.stopPropagation()} className="wp-btn wp-accent"
-                  style={{ background: C.green, color: "#fff", border: "none", borderRadius: 99, padding: "10px 20px", fontSize: 14, fontWeight: 700, minHeight: 42, flex: "0 0 auto" }}>
-                  Check this hotel
-                </button>
+                <HoverZone hotelId={l.id} z="check" style={{ display: "inline-flex", flex: "0 0 auto" }}>
+                  <button type="button" onClick={(e) => { e.stopPropagation(); onOpen(); }} onKeyDown={e => e.stopPropagation()} className="wp-btn wp-accent"
+                    style={{ background: C.green, color: "#fff", border: "none", borderRadius: 99, padding: "10px 20px", fontSize: 14, fontWeight: 700, minHeight: 42, flex: "0 0 auto" }}>
+                    Check this hotel
+                  </button>
+                </HoverZone>
               )}
             </Zone>
           ) : null;

@@ -188,6 +188,20 @@ app.post("/api/tutorial-done", async (req, res) => {
   catch (e) { console.error(e); res.status(500).json({ error: "failed" }); }
 });
 
+/* one-time device snapshot (first device only) */
+app.post("/api/device", async (req, res) => {
+  try { const { pid, ua, screen, viewport, dpr, tz } = req.body || {}; if (!pid) return res.status(400).json({ error: "pid required" });
+    await db.setDevice(String(pid).slice(0, 64), { ua, screen, viewport, dpr, tz }); res.json({ ok: true }); }
+  catch (e) { console.error(e); res.status(500).json({ error: "failed" }); }
+});
+
+/* exit-review modal opened (first time only) */
+app.post("/api/exit-start", async (req, res) => {
+  try { const { pid } = req.body || {}; if (!pid) return res.status(400).json({ error: "pid required" });
+    await db.setExitStarted(String(pid).slice(0, 64)); res.json({ ok: true }); }
+  catch (e) { console.error(e); res.status(500).json({ error: "failed" }); }
+});
+
 /* exit review screen: the hotels this participant opened, with current save state */
 app.get("/api/my-hotels", async (req, res) => {
   try {
@@ -306,13 +320,16 @@ app.post("/api/track/session", async (req, res) => {
   try {
     await db.touchParticipant(pid);
     if (ms) await db.addDwell(pid, Number(ms));
+    const { searchMs, productMs, pager, savesOpens, gallery, mouseTravel, cardSwitches } = req.body || {};
+    if (searchMs || productMs || pager || savesOpens || gallery || mouseTravel || cardSwitches) await db.addPageStats(pid, { searchMs, productMs, pager, savesOpens, gallery, mouseTravel, cardSwitches });
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: "track failed" }); }
 });
 
 // hotel event: seen (card entered viewport) | click (detail opened) | list_ms | detail_ms (dwell, n = ms)
 const EVENT_TYPES = ["seen", "click", "list_ms", "detail_ms", "review_ms", "hover_ms", "review_seen", "review_total",
-  "ai_vis_ms", "ai_hov_ms", "desc_vis_ms", "desc_hov_ms", "rating_vis_ms", "rating_hov_ms", "price_vis_ms", "price_hov_ms", "reviews_hov_ms"];
+  "ai_vis_ms", "ai_hov_ms", "desc_vis_ms", "desc_hov_ms", "rating_vis_ms", "rating_hov_ms", "price_vis_ms", "price_hov_ms", "reviews_hov_ms",
+  "photo_hov_ms", "title_hov_ms", "save_hov_ms", "dislike_hov_ms", "check_hov_ms"];
 app.post("/api/track/event", async (req, res) => {
   const { pid, hotelId, type, n } = req.body || {};
   if (!pid || !hotelId || !EVENT_TYPES.includes(type)) {
@@ -539,8 +556,14 @@ app.get("/api/admin/export/participants.csv", requireAdmin, async (req, res) => 
       ((p.avgHotelMs || 0) / 1000).toFixed(1),       // mean seconds per hotel (list + detail)
       Math.round((p.totalMs || 0) / 1000),          // total seconds on site
       p.totalMs || 0,                                // same in milliseconds
+      Math.round((p.searchMs || 0) / 1000), Math.round((p.productMs || 0) / 1000),   // foreground time on the search page / on product pages
+      p.listVisits || 0, (p.hotels || []).reduce((a, h) => a + (h.clicks || 0), 0),  // search-page entries / total product-page opens
+      p.pagerClicks || 0, p.savesOpens || 0, p.galleryClicks || 0,
+      Math.round(p.mouseTravelPx || 0), p.cardSwitches || 0,
       p.exitedAt || "",
       p.consentedAt && p.exitedAt ? Math.round((new Date(p.exitedAt) - new Date(p.consentedAt)) / 1000) : "",
+      p.exitStartedAt || "",
+      p.exitStartedAt && p.exitedAt ? Math.round((new Date(p.exitedAt) - new Date(p.exitStartedAt)) / 1000) : "",
       p.booked || "", p.booked && hotelName[p.booked] || "",
       p.siteFav ? "yes" : "no",
       p.consentedAt ? "yes" : "no",
@@ -550,24 +573,51 @@ app.get("/api/admin/export/participants.csv", requireAdmin, async (req, res) => 
       p.tutorialDoneAt || "",
       p.firstSeen || "",
       p.lastSeen || "",
+      p.deviceUa || "", p.deviceScreen || "", p.deviceViewport || "", p.deviceDpr || "", p.deviceTz || "",
     ]);
     const csv = toCsv(
       ["participant_id", "hotels_liked", "hotels_disliked", "likes_on_search_page", "likes_on_product_page", "dislikes_on_search_page", "dislikes_on_product_page", "hotels_saved",
        "saves_before_product_page", "likes_before_product_page", "dislikes_before_product_page",
-       "hotels_viewed", "hotels_clicked", "avg_seconds_per_hotel", "total_seconds_on_site", "total_ms_on_site", "finished_at", "seconds_consent_to_finish", "booked_hotel_id", "booked_hotel_name", "bookmarked_site", "consented", "ai_summary_in_search_page", "ai_summary_in_product_page", "consent_time", "tutorial_completed_at", "first_seen", "last_seen"],
+       "hotels_viewed", "hotels_clicked", "avg_seconds_per_hotel", "total_seconds_on_site", "total_ms_on_site",
+       "seconds_on_search_page", "seconds_on_product_pages", "search_page_entries", "product_page_opens_total", "pager_clicks", "saves_drawer_opens", "gallery_photo_clicks", "mouse_travel_px", "card_hover_switches", "finished_at", "seconds_consent_to_finish", "exit_flow_started_at", "seconds_in_exit_flow", "booked_hotel_id", "booked_hotel_name", "bookmarked_site", "consented", "ai_summary_in_search_page", "ai_summary_in_product_page", "consent_time", "tutorial_completed_at", "first_seen", "last_seen", "browser_user_agent", "screen_resolution", "window_size", "device_pixel_ratio", "timezone"],
       rows
     );
     sendCsv(res, "participants.csv", csv);
   } catch (e) { console.error(e); res.status(500).json({ error: "export failed" }); }
 });
 
+/* display_rank: reproduce each participant's seeded shuffle (same algorithm as the front end)
+   → this hotel's initial position in that participant's list (1 = first card of page 1).
+   Dislike-hiding shifts later cards up on screen; this column is the position before any dislikes. */
+function _hashStr(str) { let h = 2166136261; const s = String(str); for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+function _mulberry32(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+async function displayRankLookup() {
+  const byCity = {};
+  for (const h of await db.listHotels({})) (byCity[h.city] || (byCity[h.city] = [])).push(h.id);
+  for (const c of Object.keys(byCity)) byCity[c].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const cache = {};
+  return (pid, hotelId) => {
+    if (!cache[pid]) {
+      const m = (cache[pid] = {});
+      for (const [city, ids] of Object.entries(byCity)) {
+        const arr = [...ids];
+        const rnd = _mulberry32(_hashStr(`${pid || "anon"}::${city}`));
+        for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; }
+        arr.forEach((id, idx) => { m[id] = idx + 1; });
+      }
+    }
+    return cache[pid][hotelId] ?? "";
+  };
+}
+
 // export one row per participant × hotel: hotel facts + views/clicks + vote + dwell times
 app.get("/api/admin/export/hotel_events.csv", requireAdmin, async (req, res) => {
   try {
     const allow = await allowedPids(req);
     const savesState = await db.allSavesState();
+    const rankOf = await displayRankLookup();
     const rows = (await db.hotelEventRows()).filter(r => !allow || allow.has(r.pid)).map(r => [
-      r.pid, r.hotel_id, r.hotel_name, r.city, r.rating, r.review_count,
+      r.pid, r.hotel_id, r.hotel_name, r.city, r.rating, r.review_count, rankOf(r.pid, r.hotel_id),
       r.seen, r.clicks,
       r.vote === "up" ? "like" : r.vote === "down" ? "dislike" : "",
       r.vote ? (r.vote_source || "") : "",
@@ -579,21 +629,25 @@ app.get("/api/admin/export/hotel_events.csv", requireAdmin, async (req, res) => 
       ((r.hover_ms || 0) / 1000).toFixed(1), r.hover_ms || 0,
       ((r.ai_vis_ms||0)/1000).toFixed(1), ((r.ai_hov_ms||0)/1000).toFixed(1), ((r.desc_vis_ms||0)/1000).toFixed(1), ((r.desc_hov_ms||0)/1000).toFixed(1),
       ((r.rating_vis_ms||0)/1000).toFixed(1), ((r.rating_hov_ms||0)/1000).toFixed(1), ((r.price_vis_ms||0)/1000).toFixed(1), ((r.price_hov_ms||0)/1000).toFixed(1), ((r.reviews_hov_ms||0)/1000).toFixed(1),
+      ((r.photo_hov_ms||0)/1000).toFixed(1), ((r.title_hov_ms||0)/1000).toFixed(1), ((r.save_hov_ms||0)/1000).toFixed(1), ((r.dislike_hov_ms||0)/1000).toFixed(1), ((r.check_hov_ms||0)/1000).toFixed(1),
       r.first_seen_at || "", r.first_click_at || "", r.last_event_at || "",
       r.seen_pre || 0, ((r.list_ms_pre||0)/1000).toFixed(1), ((r.hover_ms_pre||0)/1000).toFixed(1),
       ((r.ai_vis_ms_pre||0)/1000).toFixed(1), ((r.ai_hov_ms_pre||0)/1000).toFixed(1), ((r.desc_vis_ms_pre||0)/1000).toFixed(1), ((r.desc_hov_ms_pre||0)/1000).toFixed(1),
       ((r.rating_vis_ms_pre||0)/1000).toFixed(1), ((r.rating_hov_ms_pre||0)/1000).toFixed(1), ((r.price_vis_ms_pre||0)/1000).toFixed(1), ((r.price_hov_ms_pre||0)/1000).toFixed(1),
+      ((r.photo_hov_ms_pre||0)/1000).toFixed(1), ((r.title_hov_ms_pre||0)/1000).toFixed(1), ((r.save_hov_ms_pre||0)/1000).toFixed(1), ((r.dislike_hov_ms_pre||0)/1000).toFixed(1), ((r.check_hov_ms_pre||0)/1000).toFixed(1),
       r.ai_search == null ? "" : (r.ai_search ? "yes" : "no"), r.ai_product == null ? "" : (r.ai_product ? "yes" : "no"),
     ]);
     const csv = toCsv(
-      ["participant_id", "hotel_id", "hotel_name", "city", "hotel_rating", "hotel_review_count",
+      ["participant_id", "hotel_id", "hotel_name", "city", "hotel_rating", "hotel_review_count", "display_rank",
        "list_views", "clicks", "vote", "vote_page", "list_dwell_seconds", "detail_dwell_seconds", "total_dwell_seconds", "list_dwell_ms", "detail_dwell_ms", "total_dwell_ms", "saved", "saved_on_page", "reviews_dwell_seconds", "reviews_dwell_ms", "reviews_scrolled_to", "reviews_shown_total", "card_hover_seconds", "card_hover_ms",
       "ai_summary_visible_seconds", "ai_summary_hover_seconds", "description_visible_seconds", "description_hover_seconds",
       "rating_visible_seconds", "rating_hover_seconds", "price_visible_seconds", "price_hover_seconds", "reviews_hover_seconds",
+      "photo_hover_seconds", "hotel_name_hover_seconds", "save_button_hover_seconds", "dislike_button_hover_seconds", "check_button_hover_seconds",
       "first_seen_at", "first_clicked_at", "last_activity_at",
       "list_views_before_product_page", "list_dwell_before_product_page_seconds", "card_hover_before_product_page_seconds",
       "ai_summary_visible_before_product_page_seconds", "ai_summary_hover_before_product_page_seconds", "description_visible_before_product_page_seconds", "description_hover_before_product_page_seconds",
-      "rating_visible_before_product_page_seconds", "rating_hover_before_product_page_seconds", "price_visible_before_product_page_seconds", "price_hover_before_product_page_seconds", "ai_summary_in_search_page", "ai_summary_in_product_page"],
+      "rating_visible_before_product_page_seconds", "rating_hover_before_product_page_seconds", "price_visible_before_product_page_seconds", "price_hover_before_product_page_seconds",
+      "photo_hover_before_product_page_seconds", "hotel_name_hover_before_product_page_seconds", "save_button_hover_before_product_page_seconds", "dislike_button_hover_before_product_page_seconds", "check_button_hover_before_product_page_seconds", "ai_summary_in_search_page", "ai_summary_in_product_page"],
       rows
     );
     sendCsv(res, "hotel_events.csv", csv);
@@ -789,8 +843,9 @@ app.get("/api/admin/export/review_votes.csv", requireAdmin, async (req, res) => 
 app.get("/api/admin/export/hover_before_click.csv", requireAdmin, async (req, res) => {
   try {
     const allow = await allowedPids(req);
+    const rankOf = await displayRankLookup();
     const rows = (await db.hotelEventRows()).filter(r => !allow || allow.has(r.pid)).map(r => [
-      r.pid, r.hotel_id, r.hotel_name, r.city, r.rating,
+      r.pid, r.hotel_id, r.hotel_name, r.city, r.rating, rankOf(r.pid, r.hotel_id),
       r.clicks > 0 ? "yes" : "no", r.first_clicked_at || r.first_click_at || "",
       r.seen_pre || 0,
       ((r.list_ms_pre || 0) / 1000).toFixed(1),
@@ -799,15 +854,17 @@ app.get("/api/admin/export/hover_before_click.csv", requireAdmin, async (req, re
       ((r.desc_vis_ms_pre || 0) / 1000).toFixed(1), ((r.desc_hov_ms_pre || 0) / 1000).toFixed(1),
       ((r.rating_vis_ms_pre || 0) / 1000).toFixed(1), ((r.rating_hov_ms_pre || 0) / 1000).toFixed(1),
       ((r.price_vis_ms_pre || 0) / 1000).toFixed(1), ((r.price_hov_ms_pre || 0) / 1000).toFixed(1),
+      ((r.photo_hov_ms_pre || 0) / 1000).toFixed(1), ((r.title_hov_ms_pre || 0) / 1000).toFixed(1), ((r.save_hov_ms_pre || 0) / 1000).toFixed(1), ((r.dislike_hov_ms_pre || 0) / 1000).toFixed(1), ((r.check_hov_ms_pre || 0) / 1000).toFixed(1),
     ]);
     sendCsv(res, "hover_before_click.csv", toCsv(
-      ["participant_id", "hotel_id", "hotel_name", "city", "hotel_rating",
+      ["participant_id", "hotel_id", "hotel_name", "city", "hotel_rating", "display_rank",
        "ever_clicked", "first_clicked_at",
        "list_views_before_click", "list_dwell_seconds_before_click", "card_hover_seconds_before_click",
        "ai_summary_visible_s_before_click", "ai_summary_hover_s_before_click",
        "description_visible_s_before_click", "description_hover_s_before_click",
        "rating_visible_s_before_click", "rating_hover_s_before_click",
-       "price_visible_s_before_click", "price_hover_s_before_click"], rows));
+       "price_visible_s_before_click", "price_hover_s_before_click",
+       "photo_hover_s_before_click", "hotel_name_hover_s_before_click", "save_button_hover_s_before_click", "dislike_button_hover_s_before_click", "check_button_hover_s_before_click"], rows));
   } catch (e) { console.error(e); res.status(500).json({ error: "export failed" }); }
 });
 
