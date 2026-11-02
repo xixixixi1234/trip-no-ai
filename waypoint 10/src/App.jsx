@@ -65,14 +65,15 @@ const Track = {
   reviewsVisibleId: null,   // hotel whose reviews section is currently on screen
   _hoverT: {},              // hotelId -> mouseenter timestamp
   hoverStart(id) { this._hoverT[id] = Date.now(); },
-  hoverEnd(id) { const t = this._hoverT[id]; if (t) { delete this._hoverT[id]; this._add(id, "hover_ms", Date.now() - t); } },
+  hoverEnd(id) { const t = this._hoverT[id]; if (t) { delete this._hoverT[id]; const ms = Date.now() - t; this._add(id, "hover_ms", ms); if (ms >= 150) this.events.push({ hotelId: id, type: "card_hover", ms: Math.round(ms), at: t }); } },
   /* semantic zones (ai / desc / rating / price / reviews): visibility set walked by the heartbeat, hover via enter/leave */
   zonesVisible: new Set(),
+  events: [],               // timestamped hover segments, shipped with each batch
   zoneShow(id, z) { this.zonesVisible.add(id + "|" + z); },
   zoneHide(id, z) { this.zonesVisible.delete(id + "|" + z); },
   _zoneHovT: {},
   zoneHoverStart(id, z) { this._zoneHovT[id + "|" + z] = Date.now(); },
-  zoneHoverEnd(id, z) { const k = id + "|" + z, t = this._zoneHovT[k]; if (t) { delete this._zoneHovT[k]; this._add(id, z.replace("_vis_", "_hov_"), Date.now() - t); } },
+  zoneHoverEnd(id, z) { const k = id + "|" + z, t = this._zoneHovT[k]; if (t) { delete this._zoneHovT[k]; const ms = Date.now() - t; this._add(id, z.replace("_vis_", "_hov_"), ms); if (ms >= 150) this.events.push({ hotelId: id, type: z.split("_")[0] + "_hover", ms: Math.round(ms), at: t }); } },
   // send buffered dwell; `beacon` = page is closing, use sendBeacon so the request survives unload
   flush(beacon = false) {
     if (!this.pid) return;
@@ -83,9 +84,10 @@ const Track = {
         if (ms >= min) items.push({ hotelId, type, n: Math.round(ms) });
       }
     }
-    if (!items.length) return;
+    const events = this.events.splice(0, 400);
+    if (!items.length && !events.length) return;
     this.buffer = {};
-    const body = JSON.stringify({ pid: this.pid, items });
+    const body = JSON.stringify({ pid: this.pid, items, events });
     if (beacon && navigator.sendBeacon) {
       navigator.sendBeacon("/api/track/batch", new Blob([body], { type: "text/plain" }));
     } else {
@@ -228,6 +230,20 @@ function loadConfig() { if (!CONFIG_PROMISE) CONFIG_PROMISE = fetchJson("/api/co
 /* Page-element switches from admin (Study settings → Page elements). Missing key = shown. */
 const UiContext = React.createContext({});
 function useShow() { const ui = React.useContext(UiContext); return (key) => ui[key] !== false; }
+/* admin-set AI summary appearance (Study settings → AI summary appearance) */
+function useAiStyle() {
+  const ui = React.useContext(UiContext);
+  const a = (ui && ui.__aiStyle) || {};
+  const hex = v => (typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v)) ? v : "";
+  const px = (v, d) => { const n = parseFloat(v); return Number.isFinite(n) && n >= 8 && n <= 48 ? n : d; };
+  const onoff = (v, d) => (v === "on" || v === "off") ? v === "on" : d;
+  return { bold: onoff(a.bold, false), box: (a.box || "off") === "on",
+           aiColor: hex(a.aiColor), badgeColor: hex(a.badgeColor), descColor: hex(a.descColor),
+           badgePx: px(a.badgePx, 12.5), aiPx: px(a.aiPx, 13), descPx: px(a.descPx, 13.5),
+           titlePx: px(a.titlePx, 18), ratingPx: px(a.ratingPx, 13.5), pricePx: px(a.pricePx, 20),
+           titleBold: onoff(a.titleBold, true), ratingBold: onoff(a.ratingBold, true), descBold: onoff(a.descBold, false),
+           badgeBold: onoff(a.badgeBold, true), priceBold: onoff(a.priceBold, true) };
+}
 
 /* ----------------------- atoms ----------------------- */
 
@@ -293,10 +309,12 @@ function firstSentence(text) {
 }
 
 function AiBadge({ color = C.buoy }) {
+  const { badgePx, badgeColor, badgeBold } = useAiStyle();
+  if (badgeColor) color = badgeColor;
   return (
     <span className="wp-tip" tabIndex={0} data-tip={AI_TIP} aria-label={`AI summary. ${AI_TIP}`} style={{
-      flex: "0 0 auto", fontFamily: "'Roboto Mono', monospace", fontSize: 9.5, whiteSpace: "nowrap",
-      color, border: `1px solid ${color}`, borderRadius: 4, padding: "2px 5px", marginTop: 2,
+      flex: "0 0 auto", fontFamily: "'Roboto Mono', monospace", fontSize: badgePx, fontWeight: badgeBold ? 600 : 400, whiteSpace: "nowrap",
+      color, border: `1.5px solid ${color}`, borderRadius: 6, padding: `${Math.round(badgePx * 0.32)}px ${Math.round(badgePx * 0.72)}px`, marginTop: 0,
     }}>AI summary</span>
   );
 }
@@ -423,6 +441,7 @@ function BookmarkButton({ favs, size = "md" }) {
 function DetailPage({ listing, onBack, votes, showAi = true }) {
   const show = useShow();
   const layout = useLayout();
+  const aiSt = useAiStyle();
   const headerOrder = layout.detail.filter(k => ["description", "vote", "save"].includes(k));
   const sectionOrder = layout.detail.filter(k => ["about", "ai", "reviews"].includes(k));
   useEffect(() => { Track.openDetail(listing.id); return () => Track.closeDetail(listing.id); }, [listing.id]);
@@ -472,7 +491,7 @@ function DetailPage({ listing, onBack, votes, showAi = true }) {
           {headerOrder.map(k => {
             if (k === "description") {
               const desc = listing.about && listing.about.trim() && listing.about.trim() !== (listing.seo || "").trim() ? listing.about.trim() : "";
-              return desc && show("detail.description") ? <Zone key={k} hotelId={listing.id} z="desc"><p className="wp-text" style={{ fontSize: 15, lineHeight: 1.7, color: C.ink, margin: "0 0 14px", maxWidth: 720 }}>{desc}</p></Zone> : null;
+              return desc && show("detail.description") ? <Zone key={k} hotelId={listing.id} z="desc"><p className="wp-text" style={{ fontSize: aiSt.descPx + 1.5, fontWeight: aiSt.descBold ? 600 : 400, lineHeight: 1.7, color: aiSt.descColor || C.ink, margin: "0 0 14px", maxWidth: 720 }}>{desc}</p></Zone> : null;
             }
             if (k === "save") return show("detail.save") && Track.pid ? (
               <div key={k} style={{ paddingTop: 14, borderTop: `1px solid ${C.line}`, marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -494,9 +513,9 @@ function DetailPage({ listing, onBack, votes, showAi = true }) {
       {sectionOrder.map(k => {
         if (k === "about") return show("about.section") ? <AboutSection key={k} listing={listing} /> : null;
         if (k === "ai") return listing.seo && showAi ? (
-          <Zone key={k} hotelId={listing.id} z="ai" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20, marginBottom: 20, display: "flex", gap: 10, alignItems: "flex-start" }}>
+          <Zone key={k} hotelId={listing.id} z="ai" style={{ background: aiSt.box ? "#FDF3ED" : C.card, border: aiSt.box ? `1.5px solid ${C.buoy}` : `1px solid ${C.line}`, borderRadius: 12, padding: 20, marginBottom: 20, display: "flex", gap: 10, alignItems: "flex-start" }}>
             <AiBadge />
-            <p className="wp-text" style={{ fontSize: 15, lineHeight: 1.7, color: C.inkSoft, margin: 0 }}>{listing.seo}</p>
+            <p className="wp-text" style={{ fontSize: aiSt.aiPx + 2, lineHeight: 1.7, color: aiSt.aiColor || (aiSt.bold ? C.ink : C.inkSoft), fontWeight: aiSt.bold ? 600 : 400, margin: 0 }}>{listing.seo}</p>
           </Zone>
         ) : null;
         if (k === "reviews") return show("reviews.section") ? <GuestReviews key={k} hotelId={listing.id} /> : null;
@@ -1363,7 +1382,7 @@ function CityPage({ cityKey, onBack, onOpen, votes, favs, cities, hotels: allHot
         </div>
       )}
 
-      {tut && <Coachmark steps={tut} skippable={tutSkip} onDone={() => { setTut(null); localStorage.setItem("fah_tut", "1"); }} />}
+      {tut && <Coachmark steps={tut} skippable={tutSkip} onDone={() => { setTut(null); localStorage.setItem("fah_tut", "1"); if (pid) postJson("/api/tutorial-done", { pid }); }} />}
       {listUi.nav === "pages" && totalPages > 1 && (
         <Pagination page={curPage} totalPages={totalPages} onGo={setPage} />
       )}
@@ -1460,9 +1479,10 @@ function CityHotelRow({ l, onOpen, votes, showAi = true }) {
   // official description from the CSV (shown plain, no label); ignore legacy rows where about was a copy of seo
   const desc = l.about && l.about.trim() && l.about.trim() !== (l.seo || "").trim() ? l.about.trim() : "";
 
+  const aiSt = useAiStyle();
   let body = null;
   if (showSeo) {
-    body = <><AiBadge /><p className="wp-text" style={{ fontSize: 13, lineHeight: 1.55, color: C.inkSoft, margin: 0 }}>{l.seo}</p></>;
+    body = <><AiBadge /><p className="wp-text" style={{ fontSize: aiSt.aiPx, lineHeight: 1.6, color: aiSt.aiColor || (aiSt.bold ? C.ink : C.inkSoft), fontWeight: aiSt.bold ? 600 : 400, margin: 0 }}>{l.seo}</p></>;
   } else if (quote.status === "loading") {
     body = <span style={{ fontSize: 12.5, color: C.inkSoft, display: "inline-flex", gap: 8, alignItems: "center" }}><Spinner /> Loading a guest quote…</span>;
   } else if (quote.status === "error") {
@@ -1497,15 +1517,19 @@ function CityHotelRow({ l, onOpen, votes, showAi = true }) {
         <CityArt className="wp-art" gradient={l.gradient} image={l.image} imageFallback={l.imageRemote} />
       </div>
       <div className="wp-text" style={{ padding: "14px 18px", minWidth: 0 }}>
-        <div className="wp-text" style={{ fontFamily: "'Poppins', sans-serif", fontSize: 18, fontWeight: 700, color: C.ink, lineHeight: 1.25 }}>{l.name}</div>
+        <div className="wp-text" style={{ fontFamily: "'Poppins', sans-serif", fontSize: aiSt.titlePx, fontWeight: aiSt.titleBold ? 700 : 400, color: C.ink, lineHeight: 1.25 }}>{l.name}</div>
         <Zone hotelId={l.id} z="rating" style={{ display: "flex", alignItems: "center", gap: 8, margin: "6px 0 10px", flexWrap: "wrap" }}>
-          <Buoys value={l.rating} size={12} />
-          <span style={{ fontWeight: 700, fontSize: 13.5, color: C.ink }}>{l.rating.toFixed(1)}</span>
-          {show("list.reviewCount") && <span style={{ fontSize: 12.5, color: C.inkSoft }}>({(l.reviewCount || 0).toLocaleString()})</span>}
+          <Buoys value={l.rating} size={aiSt.ratingPx - 1.5} />
+          <span style={{ fontWeight: aiSt.ratingBold ? 700 : 400, fontSize: aiSt.ratingPx, color: C.ink }}>{l.rating.toFixed(1)}</span>
+          {show("list.reviewCount") && <span style={{ fontSize: aiSt.ratingPx - 1, color: C.inkSoft }}>({(l.reviewCount || 0).toLocaleString()})</span>}
         </Zone>
         {layout.list.map(k => {
-          if (k === "description") return desc && show("list.description") ? <Zone key={k} hotelId={l.id} z="desc"><p className="wp-text" style={{ fontSize: 13, lineHeight: 1.6, color: C.ink, margin: "0 0 10px" }}>{firstSentence(desc)}</p></Zone> : null;
-          if (k === "ai") return body ? <Zone key={k} hotelId={l.id} z="ai" style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 10 }}>{body}</Zone> : null;
+          if (k === "description") return desc && show("list.description") ? <Zone key={k} hotelId={l.id} z="desc"><p className="wp-text" style={{ fontSize: aiSt.descPx, fontWeight: aiSt.descBold ? 600 : 400, lineHeight: 1.6, color: aiSt.descColor || C.ink, margin: "0 0 10px", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{desc}</p></Zone> : null;
+          if (k === "ai") return body ? (
+            <Zone key={k} hotelId={l.id} z="ai" style={showSeo && aiSt.box
+              ? { display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 10, background: "#FDF3ED", border: `1.5px solid ${C.buoy}`, borderRadius: 10, padding: "10px 14px" }
+              : { display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 10 }}>{body}</Zone>
+          ) : null;
           if (k === "vote") return votes && show("list.vote") ? <div key={k} style={{ margin: "2px 0 10px" }}><LikeDislike hotelId={l.id} {...votes} source="list" /></div> : null;
           if (k === "save") return (show("list.save") || show("list.vote")) && Track.pid ? (
             <div key={k} style={{ margin: "2px 0 10px", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -1518,7 +1542,7 @@ function CityHotelRow({ l, onOpen, votes, showAi = true }) {
               {show("list.price") && l.price ? (
                 <div>
                   <div style={{ fontSize: 12, color: C.inkSoft }}>from</div>
-                  <div style={{ fontFamily: "'Poppins', sans-serif", fontSize: 20, fontWeight: 700, color: C.ink, lineHeight: 1.1 }}>{l.price.replace(/^from\s*/i, "")}</div>
+                  <div style={{ fontFamily: "'Poppins', sans-serif", fontSize: aiSt.pricePx, fontWeight: aiSt.priceBold ? 700 : 400, color: C.ink, lineHeight: 1.1 }}>{l.price.replace(/^from\s*/i, "")}</div>
                 </div>
               ) : <span />}
               {show("list.check") && (
@@ -1759,7 +1783,7 @@ export default function App() {
       });
     },
   }), [saveIds, pid]);
-  useEffect(() => { loadConfig().then(c => { if (c && typeof c.aiSearch === "boolean") setAi({ search: c.aiSearch, product: c.aiProduct }); if (c && c.elements) setUi({ ...c.elements, __goodbye: (c.goodbye || "").trim(), __return: (c.returnUrl || "").trim(), __saveSize: c.saveSize || "lg" }); }).catch(() => {}); }, []);
+  useEffect(() => { loadConfig().then(c => { if (c && typeof c.aiSearch === "boolean") setAi({ search: c.aiSearch, product: c.aiProduct }); if (c && c.elements) setUi({ ...c.elements, __goodbye: (c.goodbye || "").trim(), __return: (c.returnUrl || "").trim(), __saveSize: c.saveSize || "lg", __aiStyle: c.aiStyle || {} }); }).catch(() => {}); }, []);
 
   const loadData = async (isRetry = false) => {
     setDataState(s => ({ status: isRetry ? "error" : "loading", retrying: isRetry }));
