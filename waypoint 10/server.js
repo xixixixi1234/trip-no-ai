@@ -1210,50 +1210,42 @@ You can now close this window and return to the questionnaire."></textarea>
       <div style="display:flex;gap:10px;align-items:center;margin-top:10px"><button class="btn" id="listUiSave">Save now</button><span class="muted" id="listUiMsg"></span></div>
     </div>
 
-    <h2>Card appearance (AI summary, description, title, rating, price)</h2>
+    <h2>Card appearance — font sizes &amp; colors</h2>
     <div class="panel" id="aiStylePanel">
-      <div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-end">
-        <label style="font-size:13px">"AI summary" label size
-          <select id="aisBadge" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
-            <option value="sm">Small</option><option value="lg" selected>Large (default)</option>
-          </select></label>
-        <label style="font-size:13px">Summary text weight
-          <select id="aisBold" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
-            <option value="off" selected>Normal (default)</option><option value="on">Bold</option>
-          </select></label>
-        <label style="font-size:13px">Summary text size
-          <select id="aisSize" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
-            <option value="sm" selected>Small (default)</option><option value="md">Medium</option><option value="lg">Large</option>
-          </select></label>
-        <label style="font-size:13px">Highlight box around the summary
-          <select id="aisBox" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
-            <option value="off" selected>Off (default)</option><option value="on">On (tinted box, orange border)</option>
-          </select></label>
-        <label style="font-size:13px">Summary text color
-          <input type="color" id="aisColor" value="#3D5860" style="display:block;width:64px;height:30px;padding:0;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
-        <label style="font-size:13px">"AI summary" label color
-          <input type="color" id="aisBadgeColor" value="#E8542F" style="display:block;width:64px;height:30px;padding:0;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
-        <label style="font-size:13px">Description text size
-          <select id="aisDescSize" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
-            <option value="sm" selected>Small (default)</option><option value="md">Medium</option><option value="lg">Large</option>
-          </select></label>
+      <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-end">
+        <label style="font-size:13px">Hotel name size (px)
+          <input type="number" id="aisTitlePx" min="8" max="48" step="0.5" value="18" style="display:block;width:86px;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
+        <label style="font-size:13px">Rating row size (px)
+          <input type="number" id="aisRatingPx" min="8" max="48" step="0.5" value="13.5" style="display:block;width:86px;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
+        <label style="font-size:13px">Description size (px)
+          <input type="number" id="aisDescPx" min="8" max="48" step="0.5" value="13.5" style="display:block;width:86px;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
         <label style="font-size:13px">Description color
           <input type="color" id="aisDescColor" value="#122B33" style="display:block;width:64px;height:30px;padding:0;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
-        <label style="font-size:13px">Hotel name size
-          <select id="aisTitleSize" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
-            <option value="sm">Small</option><option value="md" selected>Medium (default)</option><option value="lg">Large</option>
+        <label style="font-size:13px">"AI summary" label size (px)
+          <input type="number" id="aisBadgePx" min="8" max="48" step="0.5" value="12.5" style="display:block;width:86px;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
+        <label style="font-size:13px">"AI summary" label color
+          <input type="color" id="aisBadgeColor" value="#E8542F" style="display:block;width:64px;height:30px;padding:0;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
+        <label style="font-size:13px">AI summary text size (px)
+          <input type="number" id="aisAiPx" min="8" max="48" step="0.5" value="13" style="display:block;width:86px;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
+        <label style="font-size:13px">AI summary text color
+          <input type="color" id="aisColor" value="#3D5860" style="display:block;width:64px;height:30px;padding:0;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
+        <span style="font-size:13px"><b>Bold</b> (tick = bold)<span style="display:flex;gap:14px;flex-wrap:wrap;margin-top:7px;font-size:12.5px">
+          <label style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="aisBoldTitle" checked> Hotel name</label>
+          <label style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="aisBoldRating" checked> Rating</label>
+          <label style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="aisBoldDesc"> Description</label>
+          <label style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="aisBoldBadge" checked> AI label</label>
+          <label style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="aisBoldAi"> AI text</label>
+          <label style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="aisBoldPrice" checked> Price</label>
+        </span></span>
+        <label style="font-size:13px">Highlight box around the summary
+          <select id="aisBox" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
+            <option value="off" selected>Off (default)</option><option value="on">On</option>
           </select></label>
-        <label style="font-size:13px">Rating row size
-          <select id="aisRatingSize" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
-            <option value="sm">Small</option><option value="md" selected>Medium (default)</option><option value="lg">Large</option>
-          </select></label>
-        <label style="font-size:13px">Price size
-          <select id="aisPriceSize" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
-            <option value="sm">Small</option><option value="md" selected>Medium (default)</option><option value="lg">Large</option>
-          </select></label>
+        <label style="font-size:13px">Price size (px)
+          <input type="number" id="aisPricePx" min="8" max="48" step="0.5" value="20" style="display:block;width:86px;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
         <button class="btn" id="aiStyleSave">Save now</button><span class="muted" id="aiStyleMsg"></span>
       </div>
-      <p class="sub" style="margin:10px 0 0">Applies to the AI summary on search-page cards and the product page. Like the AI switches, do not change mid-wave.</p>
+      <p class="sub" style="margin:10px 0 0">Sizes are in px, like Word font sizes (defaults shown). Search-page cards use the value as-is; the product page adds ~2px to AI/description. Applies after the participant page reloads. Like the AI switches, do not change mid-wave.</p>
     </div>
 
     <h2>Save / Dislike button size</h2>
@@ -1717,9 +1709,12 @@ You can now close this window and return to the questionnaire."></textarea>
     document.getElementById('welcomeText').value = d.welcome || d.welcomeDefault || '';
     elemDefs = d.elementList || []; renderElems(d.elements || {});
     document.getElementById('saveSize').value = d.saveSize || 'lg';
-    const ais = d.aiStyle || {}; aisBadge.value = ais.badge || 'lg'; aisBold.value = ais.bold || 'off'; aisSize.value = ais.size || 'sm'; aisBox.value = ais.box || 'off';
-    aisColor.value = ais.aiColor || '#3D5860'; aisBadgeColor.value = ais.badgeColor || '#E8542F'; aisDescSize.value = ais.descSize || 'sm'; aisDescColor.value = ais.descColor || '#122B33';
-    aisTitleSize.value = ais.titleSize || 'md'; aisRatingSize.value = ais.ratingSize || 'md'; aisPriceSize.value = ais.priceSize || 'md';
+    const ais = d.aiStyle || {}; aisBox.value = ais.box || 'off';
+    aisBoldAi.checked = ais.bold === 'on'; aisBoldTitle.checked = (ais.titleBold || 'on') === 'on'; aisBoldRating.checked = (ais.ratingBold || 'on') === 'on';
+    aisBoldDesc.checked = ais.descBold === 'on'; aisBoldBadge.checked = (ais.badgeBold || 'on') === 'on'; aisBoldPrice.checked = (ais.priceBold || 'on') === 'on';
+    aisColor.value = ais.aiColor || '#3D5860'; aisBadgeColor.value = ais.badgeColor || '#E8542F'; aisDescColor.value = ais.descColor || '#122B33';
+    aisTitlePx.value = ais.titlePx || 18; aisRatingPx.value = ais.ratingPx || 13.5; aisDescPx.value = ais.descPx || 13.5;
+    aisBadgePx.value = ais.badgePx || 12.5; aisAiPx.value = ais.aiPx || 13; aisPricePx.value = ais.pricePx || 20;
     const lu = d.listUi || {}; document.getElementById('listFirst').value = lu.first ?? '20'; document.getElementById('listNav').value = (lu.nav === 'scroll') ? 'scroll' : 'pages';
     document.getElementById('goodbyeText').value = d.goodbye || ''; document.getElementById('returnUrl').value = d.returnUrl || '';
     const ex=d.exitTexts||{}; ex1T.value=ex.s1Title||''; ex1X.value=ex.s1Text||''; ex2T.value=ex.s2Title||''; ex2X.value=ex.s2Text||'';
@@ -1855,7 +1850,10 @@ You can now close this window and return to the questionnaire."></textarea>
   document.getElementById('goodbyeSave').onclick=async()=>{ const m=document.getElementById('goodbyeMsg'); try{ m.textContent='Saving…'; await saveGoodbye(); m.style.color='#2E7D5B'; m.textContent='Saved'; }catch(e){ m.style.color='#B3261E'; m.textContent=e.message; } };
 
   async function saveAiStyle(){
-    const v={badge:aisBadge.value,bold:aisBold.value,size:aisSize.value,box:aisBox.value,aiColor:aisColor.value,badgeColor:aisBadgeColor.value,descSize:aisDescSize.value,descColor:aisDescColor.value,titleSize:aisTitleSize.value,ratingSize:aisRatingSize.value,priceSize:aisPriceSize.value};
+    const oo=el=>el.checked?'on':'off';
+    const v={bold:oo(aisBoldAi),box:aisBox.value,aiColor:aisColor.value,badgeColor:aisBadgeColor.value,descColor:aisDescColor.value,
+             titlePx:aisTitlePx.value,ratingPx:aisRatingPx.value,descPx:aisDescPx.value,badgePx:aisBadgePx.value,aiPx:aisAiPx.value,pricePx:aisPricePx.value,
+             titleBold:oo(aisBoldTitle),ratingBold:oo(aisBoldRating),descBold:oo(aisBoldDesc),badgeBold:oo(aisBoldBadge),priceBold:oo(aisBoldPrice)};
     const r=await fetch('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'ai_style',value:JSON.stringify(v)})});
     const d=await r.json(); if(!r.ok) throw new Error(d.error||'Save failed');
   }
