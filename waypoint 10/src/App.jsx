@@ -242,7 +242,9 @@ function useAiStyle() {
            badgePx: px(a.badgePx, 12.5), aiPx: px(a.aiPx, 13), descPx: px(a.descPx, 13.5),
            titlePx: px(a.titlePx, 18), ratingPx: px(a.ratingPx, 13.5), pricePx: px(a.pricePx, 20),
            titleBold: onoff(a.titleBold, true), ratingBold: onoff(a.ratingBold, true), descBold: onoff(a.descBold, false),
-           badgeBold: onoff(a.badgeBold, true), priceBold: onoff(a.priceBold, true) };
+           badgeBold: onoff(a.badgeBold, true), priceBold: onoff(a.priceBold, true),
+           descMode: a.descMode === "first" ? "first" : "clamp",
+           descLabel: typeof a.descLabel === "string" ? a.descLabel.trim() : "Official description" };
 }
 
 /* ----------------------- atoms ----------------------- */
@@ -319,6 +321,20 @@ function AiBadge({ color = C.buoy }) {
   );
 }
 
+/* label in front of the official description (text set in admin "Description label text"; empty = hidden) */
+function DescBadge() {
+  const { badgePx, badgeBold, descLabel } = useAiStyle();
+  if (!descLabel) return null;
+  const color = "#5A6B72";
+  const longest = Math.max(...descLabel.split(/\s+/).map(w => w.length), 1);   // wrap at spaces: one word per line
+  return (
+    <span style={{
+      flex: "0 0 auto", fontFamily: "'Roboto Mono', monospace", fontSize: badgePx, fontWeight: badgeBold ? 600 : 400,
+      whiteSpace: "normal", wordBreak: "keep-all", overflowWrap: "normal", width: `${longest}ch`, boxSizing: "content-box", textAlign: "center", lineHeight: 1.3,
+      color, border: `1.5px solid ${color}`, borderRadius: 6, padding: `${Math.round(badgePx * 0.32)}px ${Math.round(badgePx * 0.72)}px`, marginTop: 0,
+    }}>{descLabel}</span>
+  );
+}
 function Tag({ children }) {
   return (
     <span className="wp-text" style={{
@@ -346,6 +362,15 @@ function useVotes() {
   const [errors, setErrors] = useState({});     // { hotelId: message }
   const [saved, setSaved] = useState({});       // { hotelId: true } — brief "Saved" flash
   const timers = useRef({});
+
+  useEffect(() => {   // restore this participant's earlier votes after a reload (keeps disliked hotels hidden)
+    let pid = null;
+    try { pid = new URLSearchParams(window.location.search).get("pid") || localStorage.getItem("fah_pid"); } catch {}
+    if (!pid) return;
+    fetchJson(`/api/my-votes?pid=${encodeURIComponent(pid)}`)
+      .then(m => { if (m && typeof m === "object" && !Array.isArray(m)) setMine(cur => ({ ...m, ...cur })); })
+      .catch(() => {});
+  }, []);
 
   const vote = async (hotelId, choice, source = "list") => {
     if (pending[hotelId]) return;
@@ -577,7 +602,14 @@ function AboutSection({ listing }) {
   const show = useShow();
   const d = listing.details || {};
   const sub = listing.subRatings || {};
-  const subKeys = show("about.subRatings") ? ["Location", "Rooms", "Value", "Cleanliness", "Service", "Sleep quality"].filter(k => typeof sub[k] === "number") : [];
+  const SUB_ELEMS = { "Location": "about.sub.location", "Rooms": "about.sub.rooms", "Value": "about.sub.value", "Cleanliness": "about.sub.cleanliness", "Service": "about.sub.service", "Sleep quality": "about.sub.sleep" };
+  const subKeys = show("about.subRatings") ? ["Location", "Rooms", "Value", "Cleanliness", "Service", "Sleep quality"].filter(k => typeof sub[k] === "number" && show(SUB_ELEMS[k])) : [];
+  /* admin "about.scoreMean": the big About score becomes the average of the DISPLAYED sub-ratings */
+  const meanMode = show("about.scoreMean") && subKeys.length > 0;
+  const headScore = meanMode ? subKeys.reduce((a, k) => a + sub[k], 0) / subKeys.length : listing.rating;
+  const headLabel = meanMode
+    ? (headScore >= 4.75 ? "Excellent" : headScore >= 4.25 ? "Very good" : headScore >= 3.5 ? "Good" : headScore >= 2.75 ? "Average" : "Poor")
+    : d.label;
   const dist = show("about.distribution") ? (d.distribution || {}) : {};
   const distTotal = Object.values(dist).reduce((a, b) => a + b, 0);
   const hasLeft = subKeys.length > 0 || distTotal > 0;
@@ -596,11 +628,11 @@ function AboutSection({ listing }) {
         {hasLeft && (
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
-              <span style={{ fontFamily: "'Poppins', sans-serif", fontSize: 40, fontWeight: 700, color: C.ink, lineHeight: 1 }}>{listing.rating.toFixed(1)}</span>
+              <span style={{ fontFamily: "'Poppins', sans-serif", fontSize: 40, fontWeight: 700, color: C.ink, lineHeight: 1 }}>{headScore.toFixed(1)}</span>
               <div>
-                {d.label && <div style={{ fontWeight: 600, fontSize: 15, color: C.ink }}>{d.label}</div>}
+                {headLabel && <div style={{ fontWeight: 600, fontSize: 15, color: C.ink }}>{headLabel}</div>}
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <Buoys value={listing.rating} size={14} />
+                  <Buoys value={headScore} size={14} />
                   <span style={{ fontSize: 13, color: C.inkSoft }}>({(listing.reviewCount || 0).toLocaleString()} reviews)</span>
                 </div>
               </div>
@@ -1286,9 +1318,12 @@ function seededShuffle(list, seedStr) {
   return arr;
 }
 
+const LIST_POS = {};   // per-city list position (page / shown count / scroll), so returning from a hotel restores it
+
 function CityPage({ cityKey, onBack, onOpen, votes, favs, cities, hotels: allHotels, pid, showAi = true }) {
   const city = cities.find(c => c.key === cityKey) || { name: cityKey, country: "", gradient: null };
-  const [page, setPage] = useState(1);
+  const savedPos = useRef(LIST_POS[cityKey]).current;
+  const [page, setPage] = useState(savedPos ? savedPos.page : 1);
   const [listUi, setListUi] = useState({ first: 20, nav: "pages" });
   const show = useShow();
   const [tut, setTut] = useState(null);   // steps array while the coachmark is active
@@ -1304,7 +1339,7 @@ function CityPage({ cityKey, onBack, onOpen, votes, favs, cities, hotels: allHot
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid]);
-  const [shownCount, setShownCount] = useState(20);
+  const [shownCount, setShownCount] = useState(savedPos ? savedPos.shown : 20);
   const [finished, setFinished] = useState(() => localStorage.getItem("fah_done") === "1");
   const [confirmExit, setConfirmExit] = useState(false);
   const finish = async () => {
@@ -1326,20 +1361,34 @@ function CityPage({ cityKey, onBack, onOpen, votes, favs, cities, hotels: allHot
       });
     },
   }), [saveIds, pid]);
-  useEffect(() => { loadConfig().then(c => { const u = (c && c.listUi) || {}; const cfg = { first: Math.max(1, u.first || 20), nav: u.nav === "scroll" ? "scroll" : "pages" }; setListUi(cfg); setShownCount(cfg.first); }); }, []);
+  useEffect(() => { loadConfig().then(c => { const u = (c && c.listUi) || {}; const cfg = { first: Math.max(1, u.first || 20), nav: u.nav === "scroll" ? "scroll" : "pages" }; setListUi(cfg); setShownCount(s => savedPos ? Math.max(s, cfg.first) : cfg.first); }); }, []);
   const PER_PAGE = listUi.first;
 
-  const hotels = useMemo(() => {
+  const ordered = useMemo(() => {
     const list = allHotels.filter(l => l.city === cityKey);
     return seededShuffle(list, `${pid || "anon"}::${cityKey}`);
   }, [cityKey, allHotels, pid]);
+  const myVotes = (votes && votes.mine) || {};
+  /* disliked hotels disappear from the list (vote data is still recorded; clearing the dislike elsewhere brings it back) */
+  const hotels = useMemo(() => ordered.filter(l => myVotes[l.id] !== "down"), [ordered, votes && votes.mine]);
 
   const totalPages = Math.max(1, Math.ceil(hotels.length / PER_PAGE));
   const curPage = Math.min(page, totalPages);
   const pageHotels = listUi.nav === "scroll" ? hotels.slice(0, shownCount) : hotels.slice((curPage - 1) * PER_PAGE, curPage * PER_PAGE);
 
-  useEffect(() => { setPage(1); setShownCount(listUi.first); }, [cityKey, listUi.first]);
-  useEffect(() => { if (listUi.nav === "pages") window.scrollTo({ top: 0, behavior: "smooth" }); }, [curPage]);
+  const cityRef = useRef(cityKey);
+  useEffect(() => { if (cityRef.current !== cityKey) { cityRef.current = cityKey; setPage(1); setShownCount(listUi.first); } }, [cityKey, listUi.first]);
+  const firstScrollRef = useRef(true);
+  useEffect(() => {
+    if (firstScrollRef.current) {   // returning from a hotel: restore the previous scroll position instead of jumping to the top
+      firstScrollRef.current = false;
+      if (savedPos && savedPos.scrollY != null) requestAnimationFrame(() => window.scrollTo(0, savedPos.scrollY));
+      return;
+    }
+    if (listUi.nav === "pages") window.scrollTo({ top: 0, behavior: "smooth" });
+  }, [curPage]);
+  useEffect(() => { LIST_POS[cityKey] = { page: curPage, shown: shownCount, scrollY: (LIST_POS[cityKey] || {}).scrollY }; });
+  useEffect(() => () => { const p = LIST_POS[cityKey]; if (p) p.scrollY = window.scrollY; }, [cityKey]);
 
   return (
     <div>
@@ -1524,7 +1573,7 @@ function CityHotelRow({ l, onOpen, votes, showAi = true }) {
           {show("list.reviewCount") && <span style={{ fontSize: aiSt.ratingPx - 1, color: C.inkSoft }}>({(l.reviewCount || 0).toLocaleString()})</span>}
         </Zone>
         {layout.list.map(k => {
-          if (k === "description") return desc && show("list.description") ? <Zone key={k} hotelId={l.id} z="desc"><p className="wp-text" style={{ fontSize: aiSt.descPx, fontWeight: aiSt.descBold ? 600 : 400, lineHeight: 1.6, color: aiSt.descColor || C.ink, margin: "0 0 10px", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{desc}</p></Zone> : null;
+          if (k === "description") return desc && show("list.description") ? <Zone key={k} hotelId={l.id} z="desc" style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 10 }}><DescBadge /><p className="wp-text" style={{ fontSize: aiSt.descPx, fontWeight: aiSt.descBold ? 600 : 400, lineHeight: 1.6, color: aiSt.descColor || C.ink, margin: 0, ...(aiSt.descMode === "first" ? {} : { display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }) }}>{aiSt.descMode === "first" ? firstSentence(desc) : desc}</p></Zone> : null;
           if (k === "ai") return body ? (
             <Zone key={k} hotelId={l.id} z="ai" style={showSeo && aiSt.box
               ? { display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 10, background: "#FDF3ED", border: `1.5px solid ${C.buoy}`, borderRadius: 10, padding: "10px 14px" }

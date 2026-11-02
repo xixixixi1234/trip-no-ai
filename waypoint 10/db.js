@@ -918,6 +918,19 @@ export async function tallies() {
   return out;
 }
 
+/* one participant's current votes: { hotelId: 'up'|'down' } (used to keep disliked hotels hidden after a reload) */
+export async function myVotes(pid) {
+  if (!HAS_DB) {
+    const out = {};
+    for (const [id, v] of Object.entries(mem.votes)) { const c = (v.voters || {})[pid]; if (c) out[id] = c; }
+    return out;
+  }
+  const { rows } = await pool.query("SELECT hotel_id, choice FROM votes WHERE voter_id=$1", [pid]);
+  const out = {};
+  for (const r of rows) out[r.hotel_id] = r.choice;
+  return out;
+}
+
 /* aggregate participation stats for the admin dashboard */
 export async function voteStats() {
   if (!HAS_DB) {
@@ -1023,6 +1036,13 @@ export const ELEMENTS = [
   ["detail.gallery",    "Product page: photo thumbnails / gallery", true],
   ["about.section",     "About block (whole section)", true],
   ["about.subRatings",  "About: sub-rating bars (Location, Rooms …)", true],
+  ["about.sub.location",    "About: sub-rating — Location", true],
+  ["about.sub.rooms",       "About: sub-rating — Rooms", true],
+  ["about.sub.value",       "About: sub-rating — Value", true],
+  ["about.sub.cleanliness", "About: sub-rating — Cleanliness", true],
+  ["about.sub.service",     "About: sub-rating — Service", true],
+  ["about.sub.sleep",       "About: sub-rating — Sleep quality", true],
+  ["about.scoreMean",   "About: big score = average of the DISPLAYED sub-ratings (instead of the hotel's overall rating)", false],
   ["about.distribution","About: Traveller rating distribution", true],
   ["about.amenities",   "About: property amenities / room features / room types", true],
   ["about.goodToKnow",  "About: Good to know (class, style, languages)", true],

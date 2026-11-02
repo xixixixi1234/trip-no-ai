@@ -160,6 +160,13 @@ app.get("/api/votes", async (_req, res) => {
   catch (e) { console.error(e); res.status(500).json({ error: "failed to load votes" }); }
 });
 
+/* this participant's own current votes, so a reload keeps disliked hotels hidden */
+app.get("/api/my-votes", async (req, res) => {
+  try { const pid = String(req.query.pid || "").trim(); if (!pid) return res.json({});
+    res.json(await db.myVotes(pid)); }
+  catch (e) { console.error(e); res.status(500).json({ error: "failed" }); }
+});
+
 /* next free participant number (P0001, P0002, …). Nothing about the visitor is read or stored —
    the browser remembers its number locally, so a refresh does not consume a new one. */
 app.get("/api/assign-id", async (_req, res) => {
@@ -1221,6 +1228,12 @@ You can now close this window and return to the questionnaire."></textarea>
           <input type="number" id="aisDescPx" min="8" max="48" step="0.5" value="13.5" style="display:block;width:86px;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
         <label style="font-size:13px">Description color
           <input type="color" id="aisDescColor" value="#122B33" style="display:block;width:64px;height:30px;padding:0;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
+        <label style="font-size:13px">Description shows
+          <select id="aisDescMode" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
+            <option value="clamp" selected>First two lines …</option><option value="first">First sentence only</option>
+          </select></label>
+        <label style="font-size:13px">Description label text (empty = no label)
+          <input type="text" id="aisDescLabel" value="Official description" placeholder="e.g. Official description" style="display:block;width:170px;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
         <label style="font-size:13px">"AI summary" label size (px)
           <input type="number" id="aisBadgePx" min="8" max="48" step="0.5" value="12.5" style="display:block;width:86px;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
         <label style="font-size:13px">"AI summary" label color
@@ -1713,6 +1726,7 @@ You can now close this window and return to the questionnaire."></textarea>
     aisBoldAi.checked = ais.bold === 'on'; aisBoldTitle.checked = (ais.titleBold || 'on') === 'on'; aisBoldRating.checked = (ais.ratingBold || 'on') === 'on';
     aisBoldDesc.checked = ais.descBold === 'on'; aisBoldBadge.checked = (ais.badgeBold || 'on') === 'on'; aisBoldPrice.checked = (ais.priceBold || 'on') === 'on';
     aisColor.value = ais.aiColor || '#3D5860'; aisBadgeColor.value = ais.badgeColor || '#E8542F'; aisDescColor.value = ais.descColor || '#122B33';
+    aisDescMode.value = ais.descMode === 'first' ? 'first' : 'clamp'; aisDescLabel.value = (ais.descLabel !== undefined) ? ais.descLabel : 'Official description';
     aisTitlePx.value = ais.titlePx || 18; aisRatingPx.value = ais.ratingPx || 13.5; aisDescPx.value = ais.descPx || 13.5;
     aisBadgePx.value = ais.badgePx || 12.5; aisAiPx.value = ais.aiPx || 13; aisPricePx.value = ais.pricePx || 20;
     const lu = d.listUi || {}; document.getElementById('listFirst').value = lu.first ?? '20'; document.getElementById('listNav').value = (lu.nav === 'scroll') ? 'scroll' : 'pages';
@@ -1852,6 +1866,7 @@ You can now close this window and return to the questionnaire."></textarea>
   async function saveAiStyle(){
     const oo=el=>el.checked?'on':'off';
     const v={bold:oo(aisBoldAi),box:aisBox.value,aiColor:aisColor.value,badgeColor:aisBadgeColor.value,descColor:aisDescColor.value,
+             descMode:aisDescMode.value,descLabel:aisDescLabel.value,
              titlePx:aisTitlePx.value,ratingPx:aisRatingPx.value,descPx:aisDescPx.value,badgePx:aisBadgePx.value,aiPx:aisAiPx.value,pricePx:aisPricePx.value,
              titleBold:oo(aisBoldTitle),ratingBold:oo(aisBoldRating),descBold:oo(aisBoldDesc),badgeBold:oo(aisBoldBadge),priceBold:oo(aisBoldPrice)};
     const r=await fetch('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'ai_style',value:JSON.stringify(v)})});
