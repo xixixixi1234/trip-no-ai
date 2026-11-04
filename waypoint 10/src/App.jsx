@@ -268,7 +268,8 @@ function useAiStyle() {
            descMode: a.descMode === "first" ? "first" : "clamp",
            descLabel: typeof a.descLabel === "string" ? a.descLabel.trim() : "Official description",
            descBadgePx: px(a.descBadgePx, px(a.badgePx, 12.5)),   // falls back to the AI label size
-           descBadgeColor: hex(a.descBadgeColor) };
+           descBadgeColor: hex(a.descBadgeColor),
+           descTip: typeof a.descTip === "string" ? a.descTip.trim() : "This description is provided by the hotel." };
 }
 
 /* ----------------------- atoms ----------------------- */
@@ -346,6 +347,64 @@ function AiBadge({ color = C.buoy, w }) {
   );
 }
 
+/* **text** inside admin-written copy renders bold (used on the thank-you page) */
+function renderBold(text) {
+  return String(text).split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
+    part.startsWith("**") && part.endsWith("**")
+      ? <b key={i} style={{ color: C.ink }}>{part.slice(2, -2)}</b>
+      : part);
+}
+
+/* thank-you page ending:
+   - Return link set   → button back to the questionnaire (+ optional countdown auto-redirect)
+   - Return link empty → tells the participant to close the tab and return to Qualtrics,
+                         and after the countdown tries to close the tab itself
+                         (browsers only allow closing tabs that were opened from a link/script;
+                          if refused, a "please close this tab" note appears) */
+function ReturnToSurvey({ url, pid, autoSecs = 0 }) {
+  const href = url ? `${url}${url.includes("?") ? "&" : "?"}pid=${encodeURIComponent(pid || "")}` : "";
+  const [left, setLeft] = useState(autoSecs > 0 ? autoSecs : null);
+  const [blocked, setBlocked] = useState(false);
+  useEffect(() => {
+    if (!autoSecs) return;
+    const t = setInterval(() => setLeft(s => (s == null ? s : s - 1)), 1000);
+    return () => clearInterval(t);
+  }, [autoSecs]);
+  useEffect(() => {
+    if (left !== 0) return;
+    try { Track.flush && Track.flush(true); } catch {}
+    if (href) { window.location.href = href; return; }
+    window.close();
+    const t = setTimeout(() => setBlocked(true), 500);   // still here → the browser refused to close the tab
+    return () => clearTimeout(t);
+  }, [left, href]);
+  return (
+    <div>
+      {href ? (
+        <a href={href}
+           style={{ display: "inline-block", marginTop: 22, background: C.green, color: "#fff", borderRadius: 99, padding: "13px 26px", fontWeight: 700, fontSize: 15.5, textDecoration: "none" }}>
+          Continue to the questionnaire →
+        </a>
+      ) : (
+        <p className="wp-text" style={{ marginTop: 20, fontSize: 15.5, fontWeight: 600, color: C.ink, lineHeight: 1.6 }}>
+          You can now close this website and return to the Qualtrics questionnaire.
+        </p>
+      )}
+      {left != null && left >= 0 && !blocked && (
+        <div style={{ marginTop: 12, fontSize: 13.5, color: C.inkSoft }}>
+          {href ? `Returning to the questionnaire automatically in ${Math.max(left, 0)} s…`
+                : `This page will close itself in ${Math.max(left, 0)} s…`}
+        </div>
+      )}
+      {blocked && (
+        <div style={{ marginTop: 12, fontSize: 13.5, color: C.inkSoft }}>
+          Please close this tab to return to the questionnaire.
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* hover-only zone (no visibility tracking): accumulates {z}_hov_ms and logs a "{z}_hover" segment */
 function HoverZone({ hotelId, z, children, style, className }) {
   useEffect(() => () => Track.zoneHoverEnd(hotelId, z + "_vis_ms"), [hotelId, z]);
@@ -360,12 +419,12 @@ function HoverZone({ hotelId, z, children, style, className }) {
 
 /* label in front of the official description (text set in admin "Description label text"; empty = hidden) */
 function DescBadge({ w }) {
-  const { descBadgePx, badgeBold, descLabel, descBadgeColor } = useAiStyle();
+  const { descBadgePx, badgeBold, descLabel, descBadgeColor, descTip } = useAiStyle();
   if (!descLabel) return null;
   const color = descBadgeColor || "#5A6B72";
   const longest = Math.max(...descLabel.split(/\s+/).map(x => x.length), 1);   // wrap at spaces: one word per line
   return (
-    <span style={{
+    <span {...(descTip ? { className: "wp-tip", tabIndex: 0, "data-tip": descTip, "aria-label": `${descLabel}. ${descTip}` } : {})} style={{
       flex: "0 0 auto", fontFamily: "'Roboto Mono', monospace", fontSize: descBadgePx, fontWeight: badgeBold ? 600 : 400,
       whiteSpace: "normal", wordBreak: "keep-all", overflowWrap: "normal", textAlign: "center", lineHeight: 1.3,
       ...(w ? { width: w, boxSizing: "border-box" } : { width: `${longest}ch`, boxSizing: "content-box" }),
@@ -1864,7 +1923,9 @@ export default function App() {
   // experimental condition: AI summary switches + page-element switches (admin → Study settings)
   const [ai, setAi] = useState({ search: true, product: true });
   const [ui, setUi] = useState({});
-  const [finished, setFinished] = useState(() => localStorage.getItem("fah_done") === "1");
+  /* ?preview=goodbye shows the thank-you page without finishing (admin preview; records nothing) */
+  const previewGoodbye = (() => { try { return new URLSearchParams(window.location.search).get("preview") === "goodbye"; } catch { return false; } })();
+  const [finished, setFinished] = useState(() => previewGoodbye || localStorage.getItem("fah_done") === "1");
   const [confirmExit, setConfirmExit] = useState(false);
   const finish = async () => {
     setConfirmExit(false); setFinished(true); localStorage.setItem("fah_done", "1");
@@ -1885,7 +1946,7 @@ export default function App() {
       });
     },
   }), [saveIds, pid]);
-  useEffect(() => { loadConfig().then(c => { if (c && typeof c.aiSearch === "boolean") setAi({ search: c.aiSearch, product: c.aiProduct }); if (c && c.elements) setUi({ ...c.elements, __goodbye: (c.goodbye || "").trim(), __return: (c.returnUrl || "").trim(), __saveSize: c.saveSize || "lg", __aiStyle: c.aiStyle || {} }); }).catch(() => {}); }, []);
+  useEffect(() => { loadConfig().then(c => { if (c && typeof c.aiSearch === "boolean") setAi({ search: c.aiSearch, product: c.aiProduct }); if (c && c.elements) setUi({ ...c.elements, __goodbye: (c.goodbye || "").trim(), __return: (c.returnUrl || "").trim(), __returnAuto: Math.max(0, Math.min(parseInt(c.returnAutoSecs, 10) || 0, 120)), __goodbyePx: Math.min(Math.max(parseFloat(c.goodbyePx) || 16, 10), 32), __saveSize: c.saveSize || "lg", __aiStyle: c.aiStyle || {} }); }).catch(() => {}); }, []);
 
   const loadData = async (isRetry = false) => {
     setDataState(s => ({ status: isRetry ? "error" : "loading", retrying: isRetry }));
@@ -1975,7 +2036,7 @@ export default function App() {
     <SavesContext.Provider value={savesApi}>
     <div style={{ minHeight: "100vh", background: C.paper, fontFamily: "'Roboto', sans-serif", color: C.ink }}>
       <style>{GLOBAL_CSS}</style>
-      {!pid && <ParticipantModal onSubmit={startSession} />}
+      {!pid && !previewGoodbye && <ParticipantModal onSubmit={startSession} />}
       <header style={{
         position: "sticky", top: 0, zIndex: 10, background: "rgba(247,249,248,0.92)",
         backdropFilter: "blur(8px)", borderBottom: `1px solid ${C.line}`,
@@ -2051,16 +2112,11 @@ export default function App() {
         <div role="dialog" aria-modal="true" aria-label="Thank you" style={{ position: "fixed", inset: 0, zIndex: 1300, background: C.paper, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
           <div style={{ textAlign: "center", maxWidth: 520 }}>
             <div style={{ fontFamily: "'Poppins', sans-serif", fontSize: 30, fontWeight: 700, color: C.ink, marginBottom: 12 }}>Thank you!</div>
-            <p className="wp-text" style={{ fontSize: 16, lineHeight: 1.7, color: C.inkSoft, whiteSpace: "pre-line" }}>
-              {ui.__goodbye || "You have finished this part of the study. Your session has been recorded.\nYou can now close this window and return to the questionnaire."}
+            <p className="wp-text" style={{ fontSize: ui.__goodbyePx || 16, lineHeight: 1.7, color: C.inkSoft, whiteSpace: "pre-line" }}>
+              {renderBold(ui.__goodbye || "You have finished this part of the study. Your session has been recorded.\nYou can now close this window and return to the questionnaire.")}
             </p>
             {pid && <div style={{ marginTop: 14, fontFamily: "'Roboto Mono', monospace", fontSize: 13, color: C.inkSoft }}>Participant ID: {pid}</div>}
-            {ui.__return && (
-              <a href={`${ui.__return}${ui.__return.includes("?") ? "&" : "?"}pid=${encodeURIComponent(pid || "")}`}
-                 style={{ display: "inline-block", marginTop: 22, background: C.green, color: "#fff", borderRadius: 99, padding: "13px 26px", fontWeight: 700, fontSize: 15.5, textDecoration: "none" }}>
-                Continue to the questionnaire →
-              </a>
-            )}
+            {(ui.__return || ui.__returnAuto > 0) && <ReturnToSurvey url={ui.__return} pid={pid} autoSecs={ui.__returnAuto} />}
           </div>
         </div>
       )}

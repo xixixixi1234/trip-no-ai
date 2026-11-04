@@ -272,6 +272,8 @@ app.get("/api/config", async (_req, res) => {
   try { const sw = await db.getAiSwitches(); res.json({ aiSearch: sw.search, aiProduct: sw.product, elements: await db.getElements(),
                goodbye: await db.getSetting("goodbye", ""),
                returnUrl: await db.getSetting("return_url", ""),
+               returnAutoSecs: await db.getSetting("return_auto_secs", "0"),
+               goodbyePx: await db.getSetting("goodbye_px", "16"),
                saveSize: await db.getSetting("save_size", "lg"),
                aiStyle: JSON.parse(await db.getSetting("ai_style", "null") || "null") || {},
                tutorialSteps: await getTutorialSteps(),
@@ -293,7 +295,7 @@ app.post("/api/track/consent", async (req, res) => {
 });
 app.get("/api/admin/settings", requireAdmin, async (_req, res) => {
   try {
-    res.json({ ai: await db.getAiSwitches(), welcome: await db.getSetting("welcome", ""), welcomeDefault: await defaultWelcome(), goodbye: await db.getSetting("goodbye", ""), returnUrl: await db.getSetting("return_url", ""), saveSize: await db.getSetting("save_size", "lg"), aiStyle: JSON.parse(await db.getSetting("ai_style", "null") || "null") || {}, tutorialSteps: await getTutorialSteps(), tutorialSkip: await db.getSetting("tutorial_skip", "on"), exitTexts: JSON.parse(await db.getSetting("exit_texts", "null") || "null") || {},
+    res.json({ ai: await db.getAiSwitches(), welcome: await db.getSetting("welcome", ""), welcomeDefault: await defaultWelcome(), goodbye: await db.getSetting("goodbye", ""), returnUrl: await db.getSetting("return_url", ""), returnAutoSecs: await db.getSetting("return_auto_secs", "0"), goodbyePx: await db.getSetting("goodbye_px", "16"), saveSize: await db.getSetting("save_size", "lg"), aiStyle: JSON.parse(await db.getSetting("ai_style", "null") || "null") || {}, tutorialSteps: await getTutorialSteps(), tutorialSkip: await db.getSetting("tutorial_skip", "on"), exitTexts: JSON.parse(await db.getSetting("exit_texts", "null") || "null") || {},
                elements: await db.getElements(), elementList: db.ELEMENTS.map(([key, label, def]) => ({ key, label, def })),
                reviewsUi: { total: await db.getSetting("reviews_total", "0"), first: await db.getSetting("reviews_first", "20"), nav: await db.getSetting("reviews_nav", "scroll") },
                listUi: { first: await db.getSetting("list_first", "20"), nav: await db.getSetting("list_nav", "pages") },
@@ -302,7 +304,7 @@ app.get("/api/admin/settings", requireAdmin, async (_req, res) => {
 });
 app.post("/api/admin/settings", requireAdmin, async (req, res) => {
   const { key, value } = req.body || {};
-  if (!key || !["welcome", "goodbye", "return_url", "save_size", "ai_style", "tutorial_steps", "tutorial_skip", "exit_texts", "ai_search", "ai_product", "elements", "layout", "reviews_total", "reviews_first", "reviews_nav", "list_first", "list_nav"].includes(key)) return res.status(400).json({ error: "unknown setting" });
+  if (!key || !["welcome", "goodbye", "goodbye_px", "return_url", "return_auto_secs", "save_size", "ai_style", "tutorial_steps", "tutorial_skip", "exit_texts", "ai_search", "ai_product", "elements", "layout", "reviews_total", "reviews_first", "reviews_nav", "list_first", "list_nav"].includes(key)) return res.status(400).json({ error: "unknown setting" });
   if (key === "elements") { try { const o = JSON.parse(String(value)); if (!o || typeof o !== "object") throw 0; } catch { return res.status(400).json({ error: "elements must be a JSON object" }); } }
   if (key === "ai_search" || key === "ai_product") {
     const sw = await db.getAiSwitches();
@@ -1244,6 +1246,8 @@ const ADMIN_HTML = `<!doctype html>
     <div class="panel">
       <p class="sub">Shown full-screen after a participant clicks "Finish study". Leave empty for the default. The participant's ID is always appended.</p>
       <label style="font-size:12.5px;color:var(--soft);display:block;margin-bottom:10px">Return link (optional) — if filled, the thank-you page shows a "Continue to the questionnaire" button opening this URL with ?pid=&lt;number&gt; appended. Leave empty if participants should just switch back to the survey tab.<input id="returnUrl" placeholder="https://yourdc.qualtrics.com/jfe/form/SV_xxxx" style="display:block;width:100%;font:inherit;font-size:13.5px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
+      <label style="font-size:12.5px;color:var(--soft);display:block;margin-bottom:10px">Thank-you text size (px) — size of the goodbye message; wrap a part of the text in **double asterisks** to make it bold.<input id="goodbyePx" type="number" min="10" max="32" step="0.5" value="16" style="display:block;width:110px;font:inherit;font-size:13.5px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
+      <label style="font-size:12.5px;color:var(--soft);display:block;margin-bottom:10px">Auto-return after (seconds) — 0 = no auto-redirect, button only. If set, the thank-you page shows a countdown and then opens the return link by itself.<input id="returnAutoSecs" type="number" min="0" max="120" step="1" value="0" style="display:block;width:110px;font:inherit;font-size:13.5px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
       <textarea id="goodbyeText" rows="4" style="width:100%;font:inherit;font-size:14px;padding:10px;border:1px solid var(--line);border-radius:8px;resize:vertical" placeholder="You have finished this part of the study. Your session has been recorded.
 You can now close this window and return to the questionnaire."></textarea>
       <div style="display:flex;gap:10px;align-items:center;margin-top:8px"><button class="btn" id="goodbyeSave">Save now</button><span class="muted" id="goodbyeMsg"></span></div>
@@ -1291,6 +1295,8 @@ You can now close this window and return to the questionnaire."></textarea>
           </select></label>
         <label style="font-size:13px">Description label text (empty = no label)
           <input type="text" id="aisDescLabel" value="Official description" placeholder="e.g. Official description" style="display:block;width:170px;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
+        <label style="font-size:13px">Description label tooltip (hover text; empty = none)
+          <input type="text" id="aisDescTip" value="This description is provided by the hotel." style="display:block;width:230px;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
         <label style="font-size:13px">Description label size (px)
           <input type="number" id="aisDescBadgePx" min="8" max="48" step="0.5" value="12.5" style="display:block;width:86px;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
         <label style="font-size:13px">Description label color
@@ -1789,10 +1795,11 @@ You can now close this window and return to the questionnaire."></textarea>
     aisColor.value = ais.aiColor || '#3D5860'; aisBadgeColor.value = ais.badgeColor || '#E8542F'; aisDescColor.value = ais.descColor || '#122B33';
     aisDescMode.value = ais.descMode === 'first' ? 'first' : 'clamp'; aisDescLabel.value = (ais.descLabel !== undefined) ? ais.descLabel : 'Official description';
     aisDescBadgePx.value = ais.descBadgePx || ais.badgePx || 12.5; aisDescBadgeColor.value = ais.descBadgeColor || '#5A6B72';
+    aisDescTip.value = (ais.descTip !== undefined) ? ais.descTip : 'This description is provided by the hotel.';
     aisTitlePx.value = ais.titlePx || 18; aisRatingPx.value = ais.ratingPx || 13.5; aisDescPx.value = ais.descPx || 13.5;
     aisBadgePx.value = ais.badgePx || 12.5; aisAiPx.value = ais.aiPx || 13; aisPricePx.value = ais.pricePx || 20;
     const lu = d.listUi || {}; document.getElementById('listFirst').value = lu.first ?? '20'; document.getElementById('listNav').value = (lu.nav === 'scroll') ? 'scroll' : 'pages';
-    document.getElementById('goodbyeText').value = d.goodbye || ''; document.getElementById('returnUrl').value = d.returnUrl || '';
+    document.getElementById('goodbyeText').value = d.goodbye || ''; document.getElementById('returnUrl').value = d.returnUrl || ''; document.getElementById('returnAutoSecs').value = d.returnAutoSecs || '0'; document.getElementById('goodbyePx').value = d.goodbyePx || '16';
     const ex=d.exitTexts||{}; ex1T.value=ex.s1Title||''; ex1X.value=ex.s1Text||''; ex2T.value=ex.s2Title||''; ex2X.value=ex.s2Text||'';
     tutSteps = (d.tutorialSteps || []).map(x => ({ target: x.target || 'card', title: x.title || '', text: x.text || '' }));
     document.getElementById('tutSkip').checked = d.tutorialSkip !== 'off';
@@ -1917,7 +1924,7 @@ You can now close this window and return to the questionnaire."></textarea>
   autosave(document.getElementById('exitPanel'), saveExit, document.getElementById('exitMsg'));
   document.getElementById('exitSave').onclick=async()=>{ const m=document.getElementById('exitMsg'); try{ m.textContent='Saving…'; await saveExit(); m.style.color='#2E7D5B'; m.textContent='Saved'; }catch(e){ m.style.color='#B3261E'; m.textContent=e.message; } };
   async function saveGoodbye(){
-    for (const [key,id] of [['goodbye','goodbyeText'],['return_url','returnUrl']]){
+    for (const [key,id] of [['goodbye','goodbyeText'],['goodbye_px','goodbyePx'],['return_url','returnUrl'],['return_auto_secs','returnAutoSecs']]){
       const r=await fetch('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,value:document.getElementById(id).value})});
       const d=await r.json(); if(!r.ok) throw new Error(d.error||'Save failed');
     }
@@ -1928,7 +1935,7 @@ You can now close this window and return to the questionnaire."></textarea>
   async function saveAiStyle(){
     const oo=el=>el.checked?'on':'off';
     const v={bold:oo(aisBoldAi),box:aisBox.value,aiColor:aisColor.value,badgeColor:aisBadgeColor.value,descColor:aisDescColor.value,
-             descMode:aisDescMode.value,descLabel:aisDescLabel.value,descBadgePx:aisDescBadgePx.value,descBadgeColor:aisDescBadgeColor.value,
+             descMode:aisDescMode.value,descLabel:aisDescLabel.value,descTip:aisDescTip.value,descBadgePx:aisDescBadgePx.value,descBadgeColor:aisDescBadgeColor.value,
              titlePx:aisTitlePx.value,ratingPx:aisRatingPx.value,descPx:aisDescPx.value,badgePx:aisBadgePx.value,aiPx:aisAiPx.value,pricePx:aisPricePx.value,
              titleBold:oo(aisBoldTitle),ratingBold:oo(aisBoldRating),descBold:oo(aisBoldDesc),badgeBold:oo(aisBoldBadge),priceBold:oo(aisBoldPrice)};
     const r=await fetch('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'ai_style',value:JSON.stringify(v)})});
