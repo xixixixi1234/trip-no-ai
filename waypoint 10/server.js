@@ -1135,6 +1135,20 @@ const ADMIN_HTML = `<!doctype html>
 
     <h2>Per participant</h2>
     <p class="sub">One row per participant ID: hotels liked / disliked, hotels viewed, average time per hotel (list + detail, over hotels they spent time on), total time on site, whether they bookmarked the site, and whether they agreed to the welcome text. Auto-refreshes every 20s.</p>
+    <div style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;margin:0 0 10px">
+      <label style="font-size:12.5px;color:var(--soft)">Sort by
+        <select id="ppSort" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px">
+          <option value="first_desc" selected>Newest first (first seen)</option>
+          <option value="last_desc">Most recent activity (last seen)</option>
+          <option value="first_asc">Oldest first (first seen)</option>
+          <option value="time_desc">Total time (longest first)</option>
+        </select></label>
+      <label style="font-size:12.5px;color:var(--soft)">First seen from
+        <input type="date" id="ppFrom" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
+      <label style="font-size:12.5px;color:var(--soft)">to
+        <input type="date" id="ppTo" style="display:block;font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
+      <span class="muted" id="ppCount" style="font-size:12px;padding-bottom:7px"></span>
+    </div>
     <div id="perParticipant"></div>
 
     <details style="margin-top:22px"><summary style="cursor:pointer;font-weight:600">Saves &amp; dislikes by hotel (all hotels, including 0)</summary><div id="breakdown" style="margin-top:10px"></div></details>
@@ -1757,13 +1771,28 @@ You can now close this window and return to the questionnaire."></textarea>
       document.getElementById('s-fav').textContent = participants.filter(p=>p.siteFav).length;
       document.getElementById('s-time').textContent = fmtDur(participants.reduce((a,p)=>a+(p.totalMs||0),0));
 
-      const pp = document.getElementById('perParticipant');
-      if (!participants.length) { pp.innerHTML = '<div class="empty">No participants yet.</div>'; }
-      else {
+      window.__ppAll = participants;
+      window.__ppRender = function(){
+        var pp = document.getElementById('perParticipant');
+        var sEl=document.getElementById('ppSort'), fEl=document.getElementById('ppFrom'), tEl=document.getElementById('ppTo');
+        var sort = sEl?sEl.value:'first_desc', from=fEl?fEl.value:'', to=tEl?tEl.value:'';
+        var rows = (window.__ppAll||[]).slice();
+        if (from) { var tf=new Date(from+'T00:00:00'); rows=rows.filter(function(p){ return p.firstSeen && new Date(p.firstSeen)>=tf; }); }
+        if (to) { var tt=new Date(to+'T23:59:59'); rows=rows.filter(function(p){ return p.firstSeen && new Date(p.firstSeen)<=tt; }); }
+        function ts(v){ return v ? new Date(v).getTime() : 0; }
+        if (sort==='last_desc') rows.sort(function(a,b){ return ts(b.lastSeen)-ts(a.lastSeen); });
+        else if (sort==='first_asc') rows.sort(function(a,b){ return ts(a.firstSeen)-ts(b.firstSeen); });
+        else if (sort==='time_desc') rows.sort(function(a,b){ return (b.totalMs||0)-(a.totalMs||0); });
+        else rows.sort(function(a,b){ return ts(b.firstSeen)-ts(a.firstSeen); });
+        var cnt=document.getElementById('ppCount'); if (cnt) cnt.textContent = rows.length+' of '+(window.__ppAll||[]).length+' participants';
+        if (!rows.length) { pp.innerHTML = '<div class="empty">No participants in this range.</div>'; return; }
+        var participants = rows;
         pp.innerHTML = '<table><thead><tr><th>Participant</th><th class="n">Saved</th><th class="n">Disliked<br><span class="muted" style="font-weight:400">search / product</span></th><th class="n">Hotels viewed</th><th class="n">Clicked</th><th class="n">Avg / hotel</th><th class="n">Avg s</th><th class="n">Total time</th><th class="n">Total s</th><th>Bookmarked</th><th>Agreed</th><th>AI in search</th><th>AI in product</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>' +
           participants.map(function(p){ return '<tr><td><b>'+esc(p.pid)+'</b></td><td class="n up">'+((p.favHotels||[]).length)+'</td><td class="n down">'+(p.dislikes||0)+' <span class="muted">('+(p.dislikesList||0)+' / '+(p.dislikesDetail||0)+')</span></td><td class="n">'+(p.hotelsSeen||0)+'</td><td class="n">'+(p.hotelsClicked||0)+'</td><td class="n">'+fmtDur(p.avgHotelMs||0)+'</td><td class="n muted">'+fmtSec(p.avgHotelMs)+'</td><td class="n">'+fmtDur(p.totalMs||0)+'</td><td class="n muted">'+fmtSec(p.totalMs)+'</td><td>'+(p.siteFav?'Yes':'No')+'</td><td>'+(p.consentedAt?'Yes':'No')+'</td><td>'+(p.aiSearch==null?'—':p.aiSearch?'On':'Off')+'</td><td>'+(p.aiProduct==null?'—':p.aiProduct?'On':'Off')+'</td><td class="muted">'+(p.firstSeen?new Date(p.firstSeen).toLocaleString():'—')+'</td><td class="muted">'+(p.lastSeen?new Date(p.lastSeen).toLocaleString():'—')+'</td></tr>'; }).join('') +
           '</tbody></table>';
-      }
+      };
+      ['ppSort','ppFrom','ppTo'].forEach(function(id){ var el=document.getElementById(id); if (el && !el.__wired){ el.__wired=true; el.onchange=window.__ppRender; } });
+      window.__ppRender();
 
       const bd = document.getElementById('breakdown');
       if (!breakdown.length) { bd.innerHTML = '<div class="empty">No hotels in the database.</div>'; }
