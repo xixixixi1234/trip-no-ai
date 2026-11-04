@@ -712,7 +712,7 @@ const DEFAULT_TUTORIAL = [
 ];
 async function getTutorialSteps() {
   try { const v = await db.getSetting("tutorial_steps", ""); if (v) { const a = JSON.parse(v);
-    if (Array.isArray(a) && a.length) return a.slice(0, 8).map(x => ({
+    if (Array.isArray(a) && a.length) return a.slice(0, 15).map(x => ({
       target: TUT_TARGETS.some(t => t[0] === x.target) ? x.target : "card",
       title: String(x.title || ""), text: String(x.text || "") })).filter(x => x.title || x.text); } } catch {}
   return DEFAULT_TUTORIAL;
@@ -1907,7 +1907,7 @@ You can now close this window and return to the questionnaire."></textarea>
     document.querySelectorAll('.tut-text').forEach(x=>x.oninput=()=>{ tutSteps[+x.dataset.i].text=x.value; });
     document.querySelectorAll('.tut-mv').forEach(b=>b.onclick=()=>{ const i=+b.dataset.i,j=i+Number(b.dataset.d); if(j<0||j>=tutSteps.length)return; [tutSteps[i],tutSteps[j]]=[tutSteps[j],tutSteps[i]]; tutRender(); saveTut().catch(()=>{}); });
     document.querySelectorAll('.tut-del').forEach(b=>b.onclick=()=>{ tutSteps.splice(+b.dataset.i,1); tutRender(); saveTut().catch(()=>{}); });
-    document.getElementById('tutAdd').onclick=()=>{ if(tutSteps.length<8) tutSteps.push({target:'card',title:'',text:''}); tutRender(); };
+    document.getElementById('tutAdd').onclick=()=>{ if(tutSteps.length<15) tutSteps.push({target:'card',title:'',text:''}); tutRender(); };
   }
   function tutRead(){ return tutSteps.filter(x=>x.title||x.text); }
   async function saveTut(){

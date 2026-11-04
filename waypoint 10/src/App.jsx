@@ -927,7 +927,7 @@ function Coachmark({ steps, onDone, skippable = true }) {
                        borderLeft: "9px solid transparent", borderRight: "9px solid transparent",
                        [below ? "borderBottom" : "borderTop"]: `9px solid ${C.card}` }} aria-hidden="true" />
         <div style={{ fontFamily: "'Poppins', sans-serif", fontSize: 16, fontWeight: 700, color: C.ink, marginBottom: 5 }}>{st.title}</div>
-        <p className="wp-text" style={{ fontSize: 13.5, lineHeight: 1.6, color: C.inkSoft, margin: "0 0 12px" }}>{st.text}</p>
+        <p className="wp-text" style={{ fontSize: 13.5, lineHeight: 1.6, color: C.inkSoft, margin: "0 0 12px" }}>{renderBold(st.text)}</p>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 12, color: C.inkSoft, flex: 1 }}>{step + 1} / {steps.length}</span>
           {step > 0 && <button type="button" onClick={() => setStep(sn => sn - 1)} className="wp-btn wp-ghost" style={{ border: `1px solid ${C.line}`, background: C.card, color: C.ink, borderRadius: 99, padding: "7px 14px", fontWeight: 600, fontSize: 13, minHeight: 36 }}>Back</button>}
@@ -1825,7 +1825,7 @@ function ParticipantModal({ onSubmit }) {
               {welcome.status === "loading" && <div style={{ display: "flex", gap: 8, alignItems: "center", color: C.inkSoft, fontSize: 14 }}><Spinner /> Loading…</div>}
               {welcome.status === "error" && <Status kind="error" onRetry={loadWelcome}>Couldn't load the instructions.</Status>}
               {welcome.status === "ok" && paragraphs.map((p, i) => (
-                <p key={i} className="wp-text" style={{ fontSize: 14.5, lineHeight: 1.65, color: C.ink, margin: "0 0 12px", whiteSpace: "pre-line" }}>{p}</p>
+                <p key={i} className="wp-text" style={{ fontSize: 14.5, lineHeight: 1.65, color: C.ink, margin: "0 0 12px", whiteSpace: "pre-line" }}>{renderBold(p)}</p>
               ))}
             </div>
             <label style={{ display: "flex", gap: 10, alignItems: "flex-start", fontSize: 14, color: C.ink, marginBottom: 14, cursor: "pointer" }}>
