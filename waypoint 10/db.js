@@ -1061,6 +1061,7 @@ export const ELEMENTS = [
   ["reviews.tripType",  "Reviews: Trip type", false],
   ["reviews.vote",      "Reviews: Helpful / Not helpful buttons", true],
   ["list.save",         "Search page: Save button", true],
+  ["save.heart",        "Save button: heart icon (untick for text only)", true],
   ["detail.save",       "Product page: Save button", true],
   ["saves.fab",         "Floating Saved-list button (bottom right)", true],
   ["exit.button",       "\"Finish study\" button in the header", true],

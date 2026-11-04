@@ -274,6 +274,7 @@ app.get("/api/config", async (_req, res) => {
                returnUrl: await db.getSetting("return_url", ""),
                returnAutoSecs: await db.getSetting("return_auto_secs", "0"),
                goodbyePx: await db.getSetting("goodbye_px", "16"),
+               goodbyeIdPx: await db.getSetting("goodbye_id_px", "22"),
                saveSize: await db.getSetting("save_size", "lg"),
                aiStyle: JSON.parse(await db.getSetting("ai_style", "null") || "null") || {},
                tutorialSteps: await getTutorialSteps(),
@@ -295,7 +296,7 @@ app.post("/api/track/consent", async (req, res) => {
 });
 app.get("/api/admin/settings", requireAdmin, async (_req, res) => {
   try {
-    res.json({ ai: await db.getAiSwitches(), welcome: await db.getSetting("welcome", ""), welcomeDefault: await defaultWelcome(), goodbye: await db.getSetting("goodbye", ""), returnUrl: await db.getSetting("return_url", ""), returnAutoSecs: await db.getSetting("return_auto_secs", "0"), goodbyePx: await db.getSetting("goodbye_px", "16"), saveSize: await db.getSetting("save_size", "lg"), aiStyle: JSON.parse(await db.getSetting("ai_style", "null") || "null") || {}, tutorialSteps: await getTutorialSteps(), tutorialSkip: await db.getSetting("tutorial_skip", "on"), exitTexts: JSON.parse(await db.getSetting("exit_texts", "null") || "null") || {},
+    res.json({ ai: await db.getAiSwitches(), welcome: await db.getSetting("welcome", ""), welcomeDefault: await defaultWelcome(), goodbye: await db.getSetting("goodbye", ""), returnUrl: await db.getSetting("return_url", ""), returnAutoSecs: await db.getSetting("return_auto_secs", "0"), goodbyePx: await db.getSetting("goodbye_px", "16"), goodbyeIdPx: await db.getSetting("goodbye_id_px", "22"), saveSize: await db.getSetting("save_size", "lg"), aiStyle: JSON.parse(await db.getSetting("ai_style", "null") || "null") || {}, tutorialSteps: await getTutorialSteps(), tutorialSkip: await db.getSetting("tutorial_skip", "on"), exitTexts: JSON.parse(await db.getSetting("exit_texts", "null") || "null") || {},
                elements: await db.getElements(), elementList: db.ELEMENTS.map(([key, label, def]) => ({ key, label, def })),
                reviewsUi: { total: await db.getSetting("reviews_total", "0"), first: await db.getSetting("reviews_first", "20"), nav: await db.getSetting("reviews_nav", "scroll") },
                listUi: { first: await db.getSetting("list_first", "20"), nav: await db.getSetting("list_nav", "pages") },
@@ -304,7 +305,7 @@ app.get("/api/admin/settings", requireAdmin, async (_req, res) => {
 });
 app.post("/api/admin/settings", requireAdmin, async (req, res) => {
   const { key, value } = req.body || {};
-  if (!key || !["welcome", "goodbye", "goodbye_px", "return_url", "return_auto_secs", "save_size", "ai_style", "tutorial_steps", "tutorial_skip", "exit_texts", "ai_search", "ai_product", "elements", "layout", "reviews_total", "reviews_first", "reviews_nav", "list_first", "list_nav"].includes(key)) return res.status(400).json({ error: "unknown setting" });
+  if (!key || !["welcome", "goodbye", "goodbye_px", "goodbye_id_px", "return_url", "return_auto_secs", "save_size", "ai_style", "tutorial_steps", "tutorial_skip", "exit_texts", "ai_search", "ai_product", "elements", "layout", "reviews_total", "reviews_first", "reviews_nav", "list_first", "list_nav"].includes(key)) return res.status(400).json({ error: "unknown setting" });
   if (key === "elements") { try { const o = JSON.parse(String(value)); if (!o || typeof o !== "object") throw 0; } catch { return res.status(400).json({ error: "elements must be a JSON object" }); } }
   if (key === "ai_search" || key === "ai_product") {
     const sw = await db.getAiSwitches();
@@ -1247,6 +1248,7 @@ const ADMIN_HTML = `<!doctype html>
       <p class="sub">Shown full-screen after a participant clicks "Finish study". Leave empty for the default. The participant's ID is always appended.</p>
       <label style="font-size:12.5px;color:var(--soft);display:block;margin-bottom:10px">Return link (optional) — if filled, the thank-you page shows a "Continue to the questionnaire" button opening this URL with ?pid=&lt;number&gt; appended. Leave empty if participants should just switch back to the survey tab.<input id="returnUrl" placeholder="https://yourdc.qualtrics.com/jfe/form/SV_xxxx" style="display:block;width:100%;font:inherit;font-size:13.5px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
       <label style="font-size:12.5px;color:var(--soft);display:block;margin-bottom:10px">Thank-you text size (px) — size of the goodbye message; wrap a part of the text in **double asterisks** to make it bold.<input id="goodbyePx" type="number" min="10" max="32" step="0.5" value="16" style="display:block;width:110px;font:inherit;font-size:13.5px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
+      <label style="font-size:12.5px;color:var(--soft);display:block;margin-bottom:10px">Participant ID size (px) — the bold "Participant ID: A0001" line on the thank-you page.<input id="goodbyeIdPx" type="number" min="10" max="60" step="0.5" value="22" style="display:block;width:110px;font:inherit;font-size:13.5px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
       <label style="font-size:12.5px;color:var(--soft);display:block;margin-bottom:10px">Auto-return after (seconds) — 0 = no auto-redirect, button only. If set, the thank-you page shows a countdown and then opens the return link by itself.<input id="returnAutoSecs" type="number" min="0" max="120" step="1" value="0" style="display:block;width:110px;font:inherit;font-size:13.5px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;margin-top:4px"></label>
       <textarea id="goodbyeText" rows="4" style="width:100%;font:inherit;font-size:14px;padding:10px;border:1px solid var(--line);border-radius:8px;resize:vertical" placeholder="You have finished this part of the study. Your session has been recorded.
 You can now close this window and return to the questionnaire."></textarea>
@@ -1799,7 +1801,7 @@ You can now close this window and return to the questionnaire."></textarea>
     aisTitlePx.value = ais.titlePx || 18; aisRatingPx.value = ais.ratingPx || 13.5; aisDescPx.value = ais.descPx || 13.5;
     aisBadgePx.value = ais.badgePx || 12.5; aisAiPx.value = ais.aiPx || 13; aisPricePx.value = ais.pricePx || 20;
     const lu = d.listUi || {}; document.getElementById('listFirst').value = lu.first ?? '20'; document.getElementById('listNav').value = (lu.nav === 'scroll') ? 'scroll' : 'pages';
-    document.getElementById('goodbyeText').value = d.goodbye || ''; document.getElementById('returnUrl').value = d.returnUrl || ''; document.getElementById('returnAutoSecs').value = d.returnAutoSecs || '0'; document.getElementById('goodbyePx').value = d.goodbyePx || '16';
+    document.getElementById('goodbyeText').value = d.goodbye || ''; document.getElementById('returnUrl').value = d.returnUrl || ''; document.getElementById('returnAutoSecs').value = d.returnAutoSecs || '0'; document.getElementById('goodbyePx').value = d.goodbyePx || '16'; document.getElementById('goodbyeIdPx').value = d.goodbyeIdPx || '22';
     const ex=d.exitTexts||{}; ex1T.value=ex.s1Title||''; ex1X.value=ex.s1Text||''; ex2T.value=ex.s2Title||''; ex2X.value=ex.s2Text||'';
     tutSteps = (d.tutorialSteps || []).map(x => ({ target: x.target || 'card', title: x.title || '', text: x.text || '' }));
     document.getElementById('tutSkip').checked = d.tutorialSkip !== 'off';
@@ -1924,7 +1926,7 @@ You can now close this window and return to the questionnaire."></textarea>
   autosave(document.getElementById('exitPanel'), saveExit, document.getElementById('exitMsg'));
   document.getElementById('exitSave').onclick=async()=>{ const m=document.getElementById('exitMsg'); try{ m.textContent='Saving…'; await saveExit(); m.style.color='#2E7D5B'; m.textContent='Saved'; }catch(e){ m.style.color='#B3261E'; m.textContent=e.message; } };
   async function saveGoodbye(){
-    for (const [key,id] of [['goodbye','goodbyeText'],['goodbye_px','goodbyePx'],['return_url','returnUrl'],['return_auto_secs','returnAutoSecs']]){
+    for (const [key,id] of [['goodbye','goodbyeText'],['goodbye_px','goodbyePx'],['goodbye_id_px','goodbyeIdPx'],['return_url','returnUrl'],['return_auto_secs','returnAutoSecs']]){
       const r=await fetch('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,value:document.getElementById(id).value})});
       const d=await r.json(); if(!r.ok) throw new Error(d.error||'Save failed');
     }

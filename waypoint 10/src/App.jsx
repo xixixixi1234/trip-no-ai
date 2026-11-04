@@ -984,6 +984,7 @@ function SavePill({ hotelId, source, size = "md" }) {
   const saves = React.useContext(SavesContext);
   const uiAll = React.useContext(UiContext);
   const dims = SAVE_DIMS[(uiAll && uiAll.__saveSize) || "lg"] || SAVE_DIMS.lg;
+  const heart = !uiAll || uiAll["save.heart"] !== false;   // admin Page elements: "Save button: heart icon"
   const on = saves.has(hotelId);
   const pad = size === "lg" ? dims.pad : "8px 16px";
   return (
@@ -995,7 +996,7 @@ function SavePill({ hotelId, source, size = "md" }) {
       style={{ display: "inline-flex", alignItems: "center", gap: 8, border: `1px solid ${on ? C.buoy : C.line}`,
                background: on ? "#FDEEE9" : C.card, color: C.ink, borderRadius: 99, padding: pad,
                fontSize: size === "lg" ? dims.font : 13.5, fontWeight: 700, minHeight: size === "lg" ? dims.h : 40 }}>
-      <HeartIcon filled={on} size={size === "lg" ? dims.icon : 15} />
+      {heart && <HeartIcon filled={on} size={size === "lg" ? dims.icon : 15} />}
       {on ? "Saved" : "Save this hotel"}
     </button>
   );
@@ -1946,7 +1947,7 @@ export default function App() {
       });
     },
   }), [saveIds, pid]);
-  useEffect(() => { loadConfig().then(c => { if (c && typeof c.aiSearch === "boolean") setAi({ search: c.aiSearch, product: c.aiProduct }); if (c && c.elements) setUi({ ...c.elements, __goodbye: (c.goodbye || "").trim(), __return: (c.returnUrl || "").trim(), __returnAuto: Math.max(0, Math.min(parseInt(c.returnAutoSecs, 10) || 0, 120)), __goodbyePx: Math.min(Math.max(parseFloat(c.goodbyePx) || 16, 10), 32), __saveSize: c.saveSize || "lg", __aiStyle: c.aiStyle || {} }); }).catch(() => {}); }, []);
+  useEffect(() => { loadConfig().then(c => { if (c && typeof c.aiSearch === "boolean") setAi({ search: c.aiSearch, product: c.aiProduct }); if (c && c.elements) setUi({ ...c.elements, __goodbye: (c.goodbye || "").trim(), __return: (c.returnUrl || "").trim(), __returnAuto: Math.max(0, Math.min(parseInt(c.returnAutoSecs, 10) || 0, 120)), __goodbyePx: Math.min(Math.max(parseFloat(c.goodbyePx) || 16, 10), 32), __goodbyeIdPx: Math.min(Math.max(parseFloat(c.goodbyeIdPx) || 22, 10), 60), __saveSize: c.saveSize || "lg", __aiStyle: c.aiStyle || {} }); }).catch(() => {}); }, []);
 
   const loadData = async (isRetry = false) => {
     setDataState(s => ({ status: isRetry ? "error" : "loading", retrying: isRetry }));
@@ -2115,7 +2116,7 @@ export default function App() {
             <p className="wp-text" style={{ fontSize: ui.__goodbyePx || 16, lineHeight: 1.7, color: C.inkSoft, whiteSpace: "pre-line" }}>
               {renderBold(ui.__goodbye || "You have finished this part of the study. Your session has been recorded.\nYou can now close this window and return to the questionnaire.")}
             </p>
-            {pid && <div style={{ marginTop: 14, fontFamily: "'Roboto Mono', monospace", fontSize: 13, color: C.inkSoft }}>Participant ID: {pid}</div>}
+            {pid && <div style={{ marginTop: 16, fontFamily: "'Roboto Mono', monospace", fontSize: ui.__goodbyeIdPx || 22, fontWeight: 700, color: C.ink }}>Participant ID: {pid}</div>}
             {(ui.__return || ui.__returnAuto > 0) && <ReturnToSurvey url={ui.__return} pid={pid} autoSecs={ui.__returnAuto} />}
           </div>
         </div>
